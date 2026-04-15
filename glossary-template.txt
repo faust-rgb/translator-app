@@ -1,0 +1,11 @@
+# 术语表示例
+# 支持两种格式：
+# 1. 原文=译文
+# 2. 原文<TAB>译文
+
+Large Language Model=大语言模型
+token=令牌
+context window=上下文窗口
+Word	Word 文档
+Excel	Excel 表格
+PowerPoint	PowerPoint 演示文稿
