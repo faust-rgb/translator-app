@@ -151,7 +151,7 @@ public sealed class DocumentTranslationCoordinator(
                 item.ErrorMessage = ex.Message;
                 item.ProgressText = "失败";
             });
-            logService.Error($"{Path.GetFileName(item.SourcePath)} 翻译失败：{ex.Message}");
+            logService.Error($"{Path.GetFileName(item.SourcePath)} 翻译失败：{ex}");
             await WriteHistoryAsync(item, settings, startedAt);
             await recoveryStateService.SaveCheckpointAsync(new DocumentCheckpoint
             {

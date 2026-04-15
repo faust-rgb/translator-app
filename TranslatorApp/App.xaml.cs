@@ -4,6 +4,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using TranslatorApp.Configuration;
+using TranslatorApp.Infrastructure;
 using TranslatorApp.Services;
 using TranslatorApp.Services.Ai;
 using TranslatorApp.Services.Documents;
@@ -18,6 +19,8 @@ public partial class App : Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        PdfSharpFontResolver.Initialize();
 
         var appDataDirectory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),

@@ -63,8 +63,7 @@ public sealed class AnthropicCompatibleTranslationClient(
                 using var response = await httpClient.SendAsync(message, cancellationToken);
                 await EnsureSuccessWithDetailsAsync(response, cancellationToken);
                 var json = await response.Content.ReadAsStringAsync(cancellationToken);
-                using var document = JsonDocument.Parse(json);
-                return document.RootElement.GetProperty("content")[0].GetProperty("text").GetString()?.Trim() ?? string.Empty;
+                return ExtractTextFromResponse(json);
             }
             catch (HttpRequestException ex) when (IsAuthenticationFailure(ex))
             {
@@ -108,7 +107,7 @@ public sealed class AnthropicCompatibleTranslationClient(
                 break;
             }
 
-            using var document = JsonDocument.Parse(payload);
+            using var document = ParseJsonWithDetails(payload);
             if (document.RootElement.TryGetProperty("type", out var typeElement) &&
                 typeElement.GetString() == "content_block_delta" &&
                 document.RootElement.TryGetProperty("delta", out var deltaElement) &&
@@ -120,6 +119,13 @@ public sealed class AnthropicCompatibleTranslationClient(
                     builder.Append(chunk);
                     await request.OnPartialResponse!(builder.ToString());
                 }
+                continue;
+            }
+
+            if (TryExtractLooseText(document.RootElement, out var looseChunk) && !string.IsNullOrWhiteSpace(looseChunk))
+            {
+                builder.Append(looseChunk);
+                await request.OnPartialResponse!(builder.ToString());
             }
         }
 
@@ -169,6 +175,151 @@ public sealed class AnthropicCompatibleTranslationClient(
         }
 
         throw new HttpRequestException($"HTTP {(int)response.StatusCode} {response.ReasonPhrase}，响应内容：{snippet}");
+    }
+
+    private static string ExtractTextFromResponse(string json)
+    {
+        using var document = ParseJsonWithDetails(json);
+        if (TryExtractLooseText(document.RootElement, out var text) && !string.IsNullOrWhiteSpace(text))
+        {
+            return text.Trim();
+        }
+
+        var snippet = json.Trim();
+        if (snippet.Length > 800)
+        {
+            snippet = snippet[..800];
+        }
+
+        throw new InvalidOperationException($"响应 JSON 中未找到可识别的文本字段。原始内容片段：{snippet}");
+    }
+
+    private static bool TryExtractLooseText(JsonElement root, out string text)
+    {
+        if (root.ValueKind == JsonValueKind.Object)
+        {
+            if (root.TryGetProperty("content", out var contentElement))
+            {
+                if (contentElement.ValueKind == JsonValueKind.String)
+                {
+                    text = contentElement.GetString() ?? string.Empty;
+                    return !string.IsNullOrWhiteSpace(text);
+                }
+
+                if (contentElement.ValueKind == JsonValueKind.Array)
+                {
+                    var parts = new List<string>();
+                    foreach (var item in contentElement.EnumerateArray())
+                    {
+                        if (item.ValueKind == JsonValueKind.String)
+                        {
+                            var value = item.GetString();
+                            if (!string.IsNullOrWhiteSpace(value))
+                            {
+                                parts.Add(value);
+                            }
+                        }
+                        else if (item.ValueKind == JsonValueKind.Object)
+                        {
+                            if (item.TryGetProperty("text", out var textElement))
+                            {
+                                var value = textElement.GetString();
+                                if (!string.IsNullOrWhiteSpace(value))
+                                {
+                                    parts.Add(value);
+                                }
+                            }
+                            else if (item.TryGetProperty("content", out var nestedContent) &&
+                                     nestedContent.ValueKind == JsonValueKind.String)
+                            {
+                                var value = nestedContent.GetString();
+                                if (!string.IsNullOrWhiteSpace(value))
+                                {
+                                    parts.Add(value);
+                                }
+                            }
+                        }
+                    }
+
+                    text = string.Concat(parts);
+                    return !string.IsNullOrWhiteSpace(text);
+                }
+            }
+
+            if (root.TryGetProperty("completion", out var completionElement) &&
+                completionElement.ValueKind == JsonValueKind.String)
+            {
+                text = completionElement.GetString() ?? string.Empty;
+                return !string.IsNullOrWhiteSpace(text);
+            }
+
+            if (root.TryGetProperty("message", out var messageElement))
+            {
+                if (messageElement.ValueKind == JsonValueKind.String)
+                {
+                    text = messageElement.GetString() ?? string.Empty;
+                    return !string.IsNullOrWhiteSpace(text);
+                }
+
+                if (messageElement.ValueKind == JsonValueKind.Object &&
+                    messageElement.TryGetProperty("content", out var messageContent))
+                {
+                    if (messageContent.ValueKind == JsonValueKind.String)
+                    {
+                        text = messageContent.GetString() ?? string.Empty;
+                        return !string.IsNullOrWhiteSpace(text);
+                    }
+                }
+            }
+
+            if (root.TryGetProperty("choices", out var choicesElement) &&
+                choicesElement.ValueKind == JsonValueKind.Array &&
+                choicesElement.GetArrayLength() > 0)
+            {
+                var choice = choicesElement[0];
+                if (choice.ValueKind == JsonValueKind.Object)
+                {
+                    if (choice.TryGetProperty("message", out var choiceMessage) &&
+                        choiceMessage.ValueKind == JsonValueKind.Object &&
+                        choiceMessage.TryGetProperty("content", out var choiceContent))
+                    {
+                        if (choiceContent.ValueKind == JsonValueKind.String)
+                        {
+                            text = choiceContent.GetString() ?? string.Empty;
+                            return !string.IsNullOrWhiteSpace(text);
+                        }
+                    }
+
+                    if (choice.TryGetProperty("text", out var choiceText) &&
+                        choiceText.ValueKind == JsonValueKind.String)
+                    {
+                        text = choiceText.GetString() ?? string.Empty;
+                        return !string.IsNullOrWhiteSpace(text);
+                    }
+                }
+            }
+        }
+
+        text = string.Empty;
+        return false;
+    }
+
+    private static JsonDocument ParseJsonWithDetails(string content)
+    {
+        try
+        {
+            return JsonDocument.Parse(content);
+        }
+        catch (JsonException ex)
+        {
+            var snippet = string.IsNullOrWhiteSpace(content) ? "空响应" : content.Trim();
+            if (snippet.Length > 800)
+            {
+                snippet = snippet[..800];
+            }
+
+            throw new InvalidOperationException($"响应不是有效 JSON。原始内容片段：{snippet}", ex);
+        }
     }
 
     private static bool IsAuthenticationFailure(HttpRequestException exception) =>

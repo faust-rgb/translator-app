@@ -29,11 +29,34 @@ public sealed class SettingsService(IOptions<AppSettings> initialOptions) : ISet
         return Task.FromResult(settings);
     }
 
+    public async Task<AppSettings> LoadFromFileAsync(string path)
+    {
+        if (!File.Exists(path))
+        {
+            throw new FileNotFoundException("配置文件不存在。", path);
+        }
+
+        var json = await File.ReadAllTextAsync(path);
+        return JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? new AppSettings();
+    }
+
     public async Task SaveAsync(AppSettings settings)
     {
         var directory = Path.GetDirectoryName(_settingsPath)!;
         Directory.CreateDirectory(directory);
         var json = JsonSerializer.Serialize(settings, JsonOptions);
         await File.WriteAllTextAsync(_settingsPath, json);
+    }
+
+    public async Task SaveToFileAsync(AppSettings settings, string path)
+    {
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var json = JsonSerializer.Serialize(settings, JsonOptions);
+        await File.WriteAllTextAsync(path, json);
     }
 }

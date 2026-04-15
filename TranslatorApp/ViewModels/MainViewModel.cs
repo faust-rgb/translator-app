@@ -8,6 +8,7 @@ using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
 using Ookii.Dialogs.Wpf;
 using TranslatorApp.Configuration;
+using TranslatorApp.Infrastructure;
 using TranslatorApp.Models;
 using TranslatorApp.Services;
 using TranslatorApp.Services.Documents;
@@ -54,7 +55,7 @@ public partial class MainViewModel : ObservableObject
     private string outputDirectory = string.Empty;
 
     [ObservableProperty]
-    private string outputFontFamily = "Microsoft YaHei UI";
+    private string outputFontFamily = PdfSharpFontResolver.DefaultFontFamily;
 
     [ObservableProperty]
     private double outputFontSize = 11;
@@ -351,6 +352,71 @@ public partial class MainViewModel : ObservableObject
         if (dialog.ShowDialog() == true)
         {
             TesseractDataPath = dialog.SelectedPath;
+        }
+    }
+
+    [RelayCommand]
+    private async Task LoadConfigFileAsync()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Filter = "JSON 配置文件|*.json|全部文件|*.*"
+        };
+
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        try
+        {
+            var settings = await _settingsService.LoadFromFileAsync(dialog.FileName);
+            ProviderType = string.IsNullOrWhiteSpace(settings.Ai.ProviderType) ? ProviderType : settings.Ai.ProviderType;
+            Model = settings.Ai.Model;
+            BaseUrl = settings.Ai.BaseUrl;
+            ApiKey = settings.Ai.ApiKey;
+            _logService.Info($"已加载配置文件：{Path.GetFileName(dialog.FileName)}");
+        }
+        catch (Exception ex)
+        {
+            _logService.Error($"加载配置文件失败：{ex.Message}");
+        }
+    }
+
+    [RelayCommand]
+    private async Task ExportConfigFileAsync()
+    {
+        var dialog = new SaveFileDialog
+        {
+            Filter = "JSON 配置文件|*.json|全部文件|*.*",
+            FileName = "ai-config.json",
+            DefaultExt = ".json"
+        };
+
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        try
+        {
+            var settings = new AppSettings
+            {
+                Ai = new AiSettings
+                {
+                    ProviderType = ProviderType,
+                    BaseUrl = BaseUrl,
+                    ApiKey = ApiKey,
+                    Model = Model
+                }
+            };
+
+            await _settingsService.SaveToFileAsync(settings, dialog.FileName);
+            _logService.Info($"已导出配置文件：{Path.GetFileName(dialog.FileName)}");
+        }
+        catch (Exception ex)
+        {
+            _logService.Error($"导出配置文件失败：{ex.Message}");
         }
     }
 
