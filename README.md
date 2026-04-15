@@ -55,3 +55,25 @@ dotnet run --project .\TranslatorApp\TranslatorApp.csproj
 ```powershell
 .\build-installer.ps1
 ```
+
+## 清理
+
+类似 `make clean` 的本地清理脚本：
+
+```powershell
+.\clean.ps1
+```
+
+会删除：
+
+- `TranslatorApp\bin`
+- `TranslatorApp\obj`
+- `publish`
+- `installer-output`
+
+## 接手文档
+
+为后续新的 Codex 会话准备的项目文档：
+
+- [PROJECT_GUIDE.md](/e:/translator/PROJECT_GUIDE.md)
+- [HANDOFF.md](/e:/translator/HANDOFF.md)

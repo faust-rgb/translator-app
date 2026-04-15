@@ -15,11 +15,6 @@ public sealed class OpenAiCompatibleTranslationClient(
 {
     public async Task<string> TranslateAsync(TranslationRequest request, CancellationToken cancellationToken)
     {
-        var uri = ApiEndpointResolver.ResolveOpenAiChatCompletionsUri(settings.BaseUrl);
-        using var message = new HttpRequestMessage(HttpMethod.Post, uri);
-        message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", settings.ApiKey);
-        message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
         var payload = new
         {
             model = settings.Model,
@@ -40,19 +35,33 @@ public sealed class OpenAiCompatibleTranslationClient(
             }
         };
 
-        message.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
         httpClient.Timeout = TimeSpan.FromSeconds(settings.TimeoutSeconds);
+        var content = JsonSerializer.Serialize(payload);
+        Exception? lastException = null;
 
-        if (request.EnableStreaming && request.OnPartialResponse is not null)
+        foreach (var uri in ApiEndpointResolver.ResolveOpenAiChatCompletionsUris(settings.BaseUrl))
         {
-            return await ReadStreamAsync(message, request, cancellationToken);
+            try
+            {
+                if (request.EnableStreaming && request.OnPartialResponse is not null)
+                {
+                    return await ReadStreamAsync(CreateMessage(uri, content), request, cancellationToken);
+                }
+
+                using var message = CreateMessage(uri, content);
+                using var response = await httpClient.SendAsync(message, cancellationToken);
+                await EnsureSuccessWithDetailsAsync(response, cancellationToken);
+                var json = await response.Content.ReadAsStringAsync(cancellationToken);
+                using var document = ParseJsonWithDetails(json);
+                return document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString()?.Trim() ?? string.Empty;
+            }
+            catch (Exception ex) when (IsEndpointCompatibilityFailure(ex))
+            {
+                lastException = ex;
+            }
         }
 
-        using var response = await httpClient.SendAsync(message, cancellationToken);
-        await EnsureSuccessWithDetailsAsync(response, cancellationToken);
-        var json = await response.Content.ReadAsStringAsync(cancellationToken);
-        using var document = JsonDocument.Parse(json);
-        return document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString()?.Trim() ?? string.Empty;
+        throw lastException ?? new InvalidOperationException("OpenAI 兼容请求失败。");
     }
 
     private async Task<string> ReadStreamAsync(HttpRequestMessage message, TranslationRequest request, CancellationToken cancellationToken)
@@ -82,7 +91,7 @@ public sealed class OpenAiCompatibleTranslationClient(
                 break;
             }
 
-            using var document = JsonDocument.Parse(payload);
+            using var document = ParseJsonWithDetails(payload);
             if (document.RootElement.TryGetProperty("choices", out var choicesElement) &&
                 choicesElement.GetArrayLength() > 0 &&
                 choicesElement[0].TryGetProperty("delta", out var deltaElement) &&
@@ -98,6 +107,15 @@ public sealed class OpenAiCompatibleTranslationClient(
         }
 
         return builder.ToString().Trim();
+    }
+
+    private HttpRequestMessage CreateMessage(Uri uri, string content)
+    {
+        var message = new HttpRequestMessage(HttpMethod.Post, uri);
+        message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", settings.ApiKey);
+        message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        message.Content = new StringContent(content, Encoding.UTF8, "application/json");
+        return message;
     }
 
     private static async Task EnsureSuccessWithDetailsAsync(HttpResponseMessage response, CancellationToken cancellationToken)
@@ -116,4 +134,29 @@ public sealed class OpenAiCompatibleTranslationClient(
 
         throw new HttpRequestException($"HTTP {(int)response.StatusCode} {response.ReasonPhrase}，响应内容：{snippet}");
     }
+
+    private static JsonDocument ParseJsonWithDetails(string content)
+    {
+        try
+        {
+            return JsonDocument.Parse(content);
+        }
+        catch (JsonException ex)
+        {
+            var snippet = string.IsNullOrWhiteSpace(content) ? "空响应" : content.Trim();
+            if (snippet.Length > 600)
+            {
+                snippet = snippet[..600];
+            }
+
+            throw new InvalidOperationException($"响应不是有效 JSON。原始内容片段：{snippet}", ex);
+        }
+    }
+
+    private static bool IsEndpointCompatibilityFailure(Exception ex) =>
+        ex.Message.Contains("404", StringComparison.OrdinalIgnoreCase) ||
+        ex.Message.Contains("405", StringComparison.OrdinalIgnoreCase) ||
+        ex.Message.Contains("响应不是有效 JSON", StringComparison.OrdinalIgnoreCase) ||
+        ex.Message.Contains("<html", StringComparison.OrdinalIgnoreCase) ||
+        ex.Message.Contains("<!DOCTYPE", StringComparison.OrdinalIgnoreCase);
 }

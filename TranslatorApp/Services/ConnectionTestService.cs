@@ -11,10 +11,17 @@ public sealed class ConnectionTestService(
     public async Task TestAsync(AppSettings settings, CancellationToken cancellationToken)
     {
         var client = clientFactory.Create(settings.Ai);
-        var endpoint = settings.Ai.ProviderType == "OpenAiCompatible"
-            ? Ai.ApiEndpointResolver.ResolveOpenAiChatCompletionsUri(settings.Ai.BaseUrl)
-            : Ai.ApiEndpointResolver.ResolveAnthropicMessagesUri(settings.Ai.BaseUrl);
-        logService.Info($"连接测试目标地址：{endpoint}");
+        if (settings.Ai.ProviderType == "OpenAiCompatible")
+        {
+            var endpoints = Ai.ApiEndpointResolver.ResolveOpenAiChatCompletionsUris(settings.Ai.BaseUrl);
+            logService.Info($"连接测试候选地址：{string.Join(" | ", endpoints)}");
+        }
+        else
+        {
+            var endpoint = Ai.ApiEndpointResolver.ResolveAnthropicMessagesUri(settings.Ai.BaseUrl);
+            logService.Info($"连接测试目标地址：{endpoint}");
+        }
+
         logService.Info($"连接测试模型：{settings.Ai.Model}");
 
         var request = new TranslationRequest

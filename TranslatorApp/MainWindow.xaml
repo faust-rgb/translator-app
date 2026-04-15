@@ -6,135 +6,155 @@
         xmlns:converters="clr-namespace:TranslatorApp.Converters"
         mc:Ignorable="d"
         Title="AI 文档翻译器"
-        Height="920"
-        Width="1500"
-        MinHeight="780"
-        MinWidth="1240"
+        Height="748"
+        Width="1420"
+        MinHeight="640"
+        MinWidth="1120"
+        Icon="Assets/app-icon.png"
         Loaded="Window_Loaded">
     <Window.Resources>
         <converters:DocumentStatusToTextConverter x:Key="StatusConverter" />
+        <Style x:Key="CompactButtonStyle" TargetType="Button">
+            <Setter Property="Height" Value="30" />
+            <Setter Property="MinWidth" Value="108" />
+            <Setter Property="Padding" Value="10,2" />
+            <Setter Property="Margin" Value="0,0,6,6" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+        </Style>
+        <Style x:Key="CompactTextBoxStyle" TargetType="TextBox">
+            <Setter Property="Height" Value="28" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+        <Style x:Key="CompactComboBoxStyle" TargetType="ComboBox">
+            <Setter Property="Height" Value="28" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+        <Style x:Key="SectionLabelStyle" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,0,0,2" />
+        </Style>
     </Window.Resources>
 
-    <Grid Margin="18">
+    <Grid Margin="10">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" MinHeight="220" />
+            <RowDefinition Height="206" MinHeight="150" />
             <RowDefinition Height="6" />
-            <RowDefinition Height="280" MinHeight="180" />
+            <RowDefinition Height="*" MinHeight="220" />
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" Padding="18" Background="#FFF7F4EC" CornerRadius="14">
+        <Border Grid.Row="0" Padding="8" Background="#FFF7F4EC" CornerRadius="10">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="2.3*" />
-                    <ColumnDefinition Width="1.25*" />
+                    <ColumnDefinition Width="2.65*" />
                     <ColumnDefinition Width="1.35*" />
-                    <ColumnDefinition Width="1.1*" />
+                    <ColumnDefinition Width="1.45*" />
+                    <ColumnDefinition Width="0.95*" />
                 </Grid.ColumnDefinitions>
 
-                <StackPanel Margin="0,0,16,0">
-                    <TextBlock FontSize="26" FontWeight="SemiBold" Text="本地 AI 文档翻译器" />
-                    <TextBlock Margin="0,8,0,0"
+                <StackPanel Margin="0,0,10,0">
+                    <TextBlock FontSize="18" FontWeight="SemiBold" Text="本地 AI 文档翻译器" />
+                    <TextBlock Margin="0,2,0,0"
                                Foreground="#FF5F5A4E"
                                TextWrapping="Wrap"
-                               Text="支持 DOCX / XLSX / PPTX / PDF。只把文本送给大模型，文档处理在本地完成。当前界面默认面向第三方兼容 Anthropic / OpenAI 协议的服务，只需要访问地址、模型名和 API Key。" />
+                               Text="支持 DOCX / XLSX / PPTX / PDF。只把文本送给大模型，文档处理在本地完成。兼容 Anthropic / OpenAI 风格接口。" />
                 </StackPanel>
 
-                <StackPanel Grid.Column="1" Margin="8,0,16,0">
-                    <TextBlock FontWeight="SemiBold" Text="接口协议" />
-                    <ComboBox Margin="0,6,0,12" SelectedValue="{Binding ProviderType}" SelectedValuePath="Content">
+                <StackPanel Grid.Column="1" Margin="8,0,10,0">
+                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="接口协议" />
+                    <ComboBox Style="{StaticResource CompactComboBoxStyle}" Margin="0,0,0,6" SelectedValue="{Binding ProviderType}" SelectedValuePath="Content">
                         <ComboBoxItem Content="AnthropicCompatible" />
                         <ComboBoxItem Content="OpenAiCompatible" />
                     </ComboBox>
-                    <TextBlock FontWeight="SemiBold" Text="访问地址" />
-                    <TextBox Margin="0,6,0,0" Text="{Binding BaseUrl, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="访问地址" />
+                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Text="{Binding BaseUrl, UpdateSourceTrigger=PropertyChanged}" />
                 </StackPanel>
 
-                <StackPanel Grid.Column="2" Margin="8,0,16,0">
-                    <TextBlock FontWeight="SemiBold" Text="模型名称" />
-                    <TextBox Margin="0,6,0,12" Text="{Binding Model, UpdateSourceTrigger=PropertyChanged}" />
-                    <TextBlock FontWeight="SemiBold" Text="API Key" />
-                    <TextBox Margin="0,6,0,0" Text="{Binding ApiKey, UpdateSourceTrigger=PropertyChanged}" />
+                <StackPanel Grid.Column="2" Margin="8,0,10,0">
+                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="模型名称" />
+                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding Model, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="API Key" />
+                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Text="{Binding ApiKey, UpdateSourceTrigger=PropertyChanged}" />
                 </StackPanel>
 
                 <StackPanel Grid.Column="3">
-                    <TextBlock FontWeight="SemiBold" Text="接口测试" />
-                    <Button Margin="0,6,0,0" Height="34" Command="{Binding TestConnectionCommand}" Content="连接测试" />
+                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="接口测试" />
+                    <Button Style="{StaticResource CompactButtonStyle}" Margin="0,0,0,0" Command="{Binding TestConnectionCommand}" Content="连接测试" />
                 </StackPanel>
             </Grid>
         </Border>
 
-        <Grid Grid.Row="1" Margin="0,16,0,16">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="1.2*" />
-                <ColumnDefinition Width="1.2*" />
-                <ColumnDefinition Width="1*" />
-                <ColumnDefinition Width="1.1*" />
-                <ColumnDefinition Width="1.15*" />
-                <ColumnDefinition Width="1.55*" />
-            </Grid.ColumnDefinitions>
+        <Border Grid.Row="1" Margin="0,8,0,8" Padding="8" Background="#FFF8F8F8" CornerRadius="10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1.55*" />
+                    <ColumnDefinition Width="0.95*" />
+                    <ColumnDefinition Width="0.85*" />
+                    <ColumnDefinition Width="0.9*" />
+                    <ColumnDefinition Width="1.0*" />
+                </Grid.ColumnDefinitions>
 
-            <StackPanel Margin="0,0,18,0">
-                <TextBlock FontWeight="SemiBold" Text="源语言" />
-                <ComboBox Margin="0,6,0,12"
-                          IsEditable="True"
-                          ItemsSource="{Binding CommonLanguages}"
-                          Text="{Binding SourceLanguage, UpdateSourceTrigger=PropertyChanged}" />
-                <TextBlock FontWeight="SemiBold" Text="目标语言" />
-                <ComboBox Margin="0,6,0,0"
-                          IsEditable="True"
-                          ItemsSource="{Binding CommonLanguages}"
-                          Text="{Binding TargetLanguage, UpdateSourceTrigger=PropertyChanged}" />
-            </StackPanel>
+                <StackPanel Margin="0,0,8,0">
+                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="源语言" />
+                    <ComboBox Style="{StaticResource CompactComboBoxStyle}"
+                              Margin="0,0,0,6"
+                              IsEditable="True"
+                              ItemsSource="{Binding CommonLanguages}"
+                              Text="{Binding SourceLanguage, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="目标语言" />
+                    <ComboBox Style="{StaticResource CompactComboBoxStyle}"
+                              Margin="0,0,0,6"
+                              IsEditable="True"
+                              ItemsSource="{Binding CommonLanguages}"
+                              Text="{Binding TargetLanguage, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="操作" />
+                    <WrapPanel Margin="0,2,0,0" ItemHeight="30" ItemWidth="92">
+                        <Button Style="{StaticResource CompactButtonStyle}" Command="{Binding AddFilesCommand}" Content="添加文档" />
+                        <Button Style="{StaticResource CompactButtonStyle}" Command="{Binding ClearFilesCommand}" Content="清空列表" />
+                        <Button Style="{StaticResource CompactButtonStyle}" Command="{Binding SaveSettingsCommand}" Content="保存配置" />
+                        <Button Style="{StaticResource CompactButtonStyle}" Command="{Binding StartCommand}" Content="开始翻译" />
+                        <Button Style="{StaticResource CompactButtonStyle}" Command="{Binding PauseOrResumeCommand}" Content="{Binding PauseButtonText}" />
+                        <Button Style="{StaticResource CompactButtonStyle}" Command="{Binding StopCommand}" Content="停止任务" />
+                        <Button Style="{StaticResource CompactButtonStyle}" Command="{Binding OpenOutputDocumentCommand}" CommandParameter="{Binding SelectedDocument}" Content="打开译后文档" />
+                    </WrapPanel>
+                </StackPanel>
 
-            <StackPanel Grid.Column="1" Margin="0,0,18,0">
-                <TextBlock FontWeight="SemiBold" Text="输出字体" />
-                <TextBox Margin="0,6,0,12" Text="{Binding OutputFontFamily, UpdateSourceTrigger=PropertyChanged}" />
-                <TextBlock FontWeight="SemiBold" Text="输出字号" />
-                <TextBox Margin="0,6,0,0" Text="{Binding OutputFontSize, UpdateSourceTrigger=PropertyChanged}" />
-            </StackPanel>
+                <StackPanel Grid.Column="1" Margin="0,0,8,0">
+                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="输出字体" />
+                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding OutputFontFamily, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="输出字号" />
+                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding OutputFontSize, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="输出目录" />
+                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding OutputDirectory, UpdateSourceTrigger=PropertyChanged}" />
+                    <Button Style="{StaticResource CompactButtonStyle}" Margin="0,0,0,0" Command="{Binding PickOutputDirectoryCommand}" Content="选择输出目录" />
+                </StackPanel>
 
-            <StackPanel Grid.Column="2" Margin="0,0,18,0">
-                <TextBlock FontWeight="SemiBold" Text="术语表文件" />
-                <TextBox Margin="0,6,0,12" Text="{Binding GlossaryPath, UpdateSourceTrigger=PropertyChanged}" />
-                <Button Height="34" Command="{Binding PickGlossaryFileCommand}" Content="选择术语表" />
-            </StackPanel>
+                <StackPanel Grid.Column="2" Margin="0,0,8,0">
+                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="术语表文件" />
+                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding GlossaryPath, UpdateSourceTrigger=PropertyChanged}" />
+                    <Button Style="{StaticResource CompactButtonStyle}" Margin="0,0,0,6" Command="{Binding PickGlossaryFileCommand}" Content="选择术语表" />
+                    <CheckBox Margin="0,0,0,6" IsChecked="{Binding EnableStreaming}" Content="启用流式预览" />
+                    <CheckBox Margin="0,0,0,6" IsChecked="{Binding ExportBilingualDocument}" Content="导出双语 DOCX" />
+                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="失败重试次数" />
+                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Text="{Binding RetryCount, UpdateSourceTrigger=PropertyChanged}" />
+                </StackPanel>
 
-            <StackPanel Grid.Column="3" Margin="0,0,18,0">
-                <CheckBox Margin="0,0,0,10" IsChecked="{Binding EnableStreaming}" Content="启用流式预览" />
-                <CheckBox Margin="0,0,0,10" IsChecked="{Binding ExportBilingualDocument}" Content="导出双语对照 DOCX" />
-                <CheckBox Margin="0,0,0,10" IsChecked="{Binding EnableOcrForScannedPdf}" Content="扫描 PDF 启用 OCR" />
-                <TextBlock FontWeight="SemiBold" Text="失败重试次数" />
-                <TextBox Margin="0,6,0,0" Text="{Binding RetryCount, UpdateSourceTrigger=PropertyChanged}" />
-            </StackPanel>
+                <StackPanel Grid.Column="3" Margin="0,0,8,0">
+                    <CheckBox Margin="0,0,0,6" IsChecked="{Binding EnableOcrForScannedPdf}" Content="扫描 PDF 启用 OCR" />
+                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="OCR 语言" />
+                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding OcrLanguage, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="tessdata 目录" />
+                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding TesseractDataPath, UpdateSourceTrigger=PropertyChanged}" />
+                    <Button Style="{StaticResource CompactButtonStyle}" Margin="0,0,0,0" Command="{Binding PickTesseractDataDirectoryCommand}" Content="选择 tessdata" />
+                </StackPanel>
 
-            <StackPanel Grid.Column="4" Margin="0,0,18,0">
-                <TextBlock FontWeight="SemiBold" Text="OCR 语言" />
-                <TextBox Margin="0,6,0,12" Text="{Binding OcrLanguage, UpdateSourceTrigger=PropertyChanged}" />
-                <TextBlock FontWeight="SemiBold" Text="tessdata 目录" />
-                <TextBox Margin="0,6,0,12" Text="{Binding TesseractDataPath, UpdateSourceTrigger=PropertyChanged}" />
-                <Button Height="34" Command="{Binding PickTesseractDataDirectoryCommand}" Content="选择 tessdata 目录" />
-            </StackPanel>
+                <Border Grid.Column="4" Background="Transparent" />
+            </Grid>
+        </Border>
 
-            <StackPanel Grid.Column="5">
-                <TextBlock FontWeight="SemiBold" Text="操作" />
-                <TextBlock Margin="0,10,0,0" FontWeight="SemiBold" Text="输出目录" />
-                <TextBox Margin="0,6,0,12" Text="{Binding OutputDirectory, UpdateSourceTrigger=PropertyChanged}" />
-                <WrapPanel ItemHeight="36" ItemWidth="126">
-                    <Button Margin="0,0,10,10" Command="{Binding PickOutputDirectoryCommand}" Content="选择输出目录" />
-                    <Button Margin="0,0,10,10" Command="{Binding AddFilesCommand}" Content="添加文档" />
-                    <Button Margin="0,0,10,10" Command="{Binding ClearFilesCommand}" Content="清空列表" />
-                    <Button Margin="0,0,10,10" Command="{Binding SaveSettingsCommand}" Content="保存配置" />
-                    <Button Margin="0,0,10,10" Command="{Binding StartCommand}" Content="开始翻译" />
-                    <Button Margin="0,0,10,10" Command="{Binding PauseOrResumeCommand}" Content="{Binding PauseButtonText}" />
-                    <Button Margin="0,0,10,10" Command="{Binding StopCommand}" Content="停止任务" />
-                    <Button Margin="0,0,10,10" Command="{Binding OpenOutputDocumentCommand}" CommandParameter="{Binding SelectedDocument}" Content="打开译后文档" />
-                </WrapPanel>
-            </StackPanel>
-        </Grid>
-
-        <Grid Grid.Row="2" Margin="0,0,0,0">
+        <Grid Grid.Row="2">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
@@ -146,17 +166,17 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Orientation="Vertical">
-                    <TextBlock FontSize="18" FontWeight="SemiBold" Text="任务列表" />
-                    <TextBlock Foreground="#FF666666" Text="右键任务可继续或删除。停止后的任务不会自动重跑。" />
+                    <TextBlock FontSize="15" FontWeight="SemiBold" Text="任务列表" />
+                    <TextBlock Foreground="#FF666666" Text="右键任务可继续、删除或打开译后文档。" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" HorizontalAlignment="Right">
                     <TextBlock FontWeight="SemiBold" Text="{Binding OverallProgress, StringFormat=总进度 {0}%}" />
-                    <ProgressBar Width="220" Height="18" Margin="0,8,0,0" Value="{Binding OverallProgress}" Maximum="100" />
+                    <ProgressBar Width="200" Height="12" Margin="0,4,0,0" Value="{Binding OverallProgress}" Maximum="100" />
                 </StackPanel>
             </Grid>
 
             <DataGrid Grid.Row="1"
-                      Margin="0,14,0,0"
+                      Margin="0,6,0,0"
                       AutoGenerateColumns="False"
                       CanUserAddRows="False"
                       ItemsSource="{Binding Documents}"
@@ -178,13 +198,13 @@
                     </ContextMenu>
                 </DataGrid.ContextMenu>
                 <DataGrid.Columns>
-                    <DataGridTextColumn Width="2.3*" Header="源文件" Binding="{Binding SourcePath}" />
-                    <DataGridTextColumn Width="1.8*" Header="输出文件" Binding="{Binding OutputPath}" />
-                    <DataGridTextColumn Width="0.55*" Header="类型" Binding="{Binding FileType}" />
-                    <DataGridTextColumn Width="0.65*" Header="状态" Binding="{Binding Status, Converter={StaticResource StatusConverter}}" />
+                    <DataGridTextColumn Width="2.2*" Header="源文件" Binding="{Binding SourcePath}" />
+                    <DataGridTextColumn Width="1.7*" Header="输出文件" Binding="{Binding OutputPath}" />
+                    <DataGridTextColumn Width="0.5*" Header="类型" Binding="{Binding FileType}" />
+                    <DataGridTextColumn Width="0.6*" Header="状态" Binding="{Binding Status, Converter={StaticResource StatusConverter}}" />
                     <DataGridTextColumn Width="0.55*" Header="进度" Binding="{Binding Progress, StringFormat={}{0}%}" />
-                    <DataGridTextColumn Width="1.2*" Header="详情" Binding="{Binding ProgressText}" />
-                    <DataGridTextColumn Width="1.1*" Header="错误信息" Binding="{Binding ErrorMessage}" />
+                    <DataGridTextColumn Width="1.1*" Header="详情" Binding="{Binding ProgressText}" />
+                    <DataGridTextColumn Width="1.0*" Header="错误信息" Binding="{Binding ErrorMessage}" />
                 </DataGrid.Columns>
             </DataGrid>
         </Grid>
@@ -193,52 +213,57 @@
                       Height="6"
                       HorizontalAlignment="Stretch"
                       VerticalAlignment="Stretch"
-                      Background="#FFD0D0D0"
+                      Background="#FFBDBDBD"
+                      ShowsPreview="True"
                       ResizeDirection="Rows"
                       ResizeBehavior="PreviousAndNext" />
 
-        <Border Grid.Row="4" Padding="14" Background="#FFF3F3F3" CornerRadius="14">
+        <Border Grid.Row="4" Padding="10" Background="#FFF3F3F3" CornerRadius="10">
             <Grid>
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1.0*" />
                     <ColumnDefinition Width="1.05*" />
-                    <ColumnDefinition Width="1.2*" />
-                    <ColumnDefinition Width="1.15*" />
+                    <ColumnDefinition Width="0.95*" />
                 </Grid.ColumnDefinitions>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
 
-                <TextBlock FontSize="18" FontWeight="SemiBold" Text="{Binding StreamPreviewTitle}" />
-                <TextBlock Grid.Column="1" FontSize="18" FontWeight="SemiBold" Text="运行日志" />
+                <TextBlock FontSize="14" FontWeight="SemiBold" Text="{Binding StreamPreviewTitle}" />
+                <TextBlock Grid.Column="1" FontSize="14" FontWeight="SemiBold" Text="运行日志" />
 
-                <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Stretch">
-                    <TextBlock FontSize="18" FontWeight="SemiBold" Text="任务历史" />
-                    <Button Margin="12,0,0,0" Height="28" Padding="12,2" Command="{Binding ClearHistoryCommand}" Content="清空历史" />
-                </StackPanel>
+                <DockPanel Grid.Column="2">
+                    <TextBlock FontSize="14" FontWeight="SemiBold" Text="任务历史" />
+                    <Button DockPanel.Dock="Right" Margin="8,0,0,0" Height="22" Padding="10,1" Command="{Binding ClearHistoryCommand}" Content="清空历史" />
+                </DockPanel>
 
                 <TextBox Grid.Row="1"
-                         Margin="0,12,12,0"
+                         Margin="0,6,8,0"
                          FontFamily="Consolas"
+                         FontSize="12"
                          IsReadOnly="True"
                          TextWrapping="Wrap"
-                         VerticalScrollBarVisibility="Auto"
+                         HorizontalScrollBarVisibility="Auto"
+                         VerticalScrollBarVisibility="Visible"
                          AcceptsReturn="True"
                          Text="{Binding StreamPreviewText}" />
 
                 <TextBox Grid.Row="1"
                          Grid.Column="1"
-                         Margin="12,12,12,0"
+                         Margin="8,6,8,0"
                          FontFamily="Consolas"
+                         FontSize="12"
                          IsReadOnly="True"
                          TextWrapping="Wrap"
-                         VerticalScrollBarVisibility="Auto"
+                         HorizontalScrollBarVisibility="Auto"
+                         VerticalScrollBarVisibility="Visible"
                          AcceptsReturn="True"
                          Text="{Binding LogText}" />
 
                 <DataGrid Grid.Row="1"
                           Grid.Column="2"
-                          Margin="12,12,0,0"
+                          Margin="8,6,0,0"
                           AutoGenerateColumns="False"
                           CanUserAddRows="False"
                           ItemsSource="{Binding HistoryItems}"
@@ -246,10 +271,10 @@
                           HeadersVisibility="Column"
                           RowHeaderWidth="0">
                     <DataGrid.Columns>
-                        <DataGridTextColumn Width="0.95*" Header="时间" Binding="{Binding Timestamp, StringFormat={}{0:MM-dd HH:mm}}" />
-                        <DataGridTextColumn Width="1.4*" Header="源文件" Binding="{Binding SourcePath}" />
-                        <DataGridTextColumn Width="0.7*" Header="状态" Binding="{Binding Status}" />
-                        <DataGridTextColumn Width="0.6*" Header="耗时(s)" Binding="{Binding DurationSeconds}" />
+                        <DataGridTextColumn Width="0.9*" Header="时间" Binding="{Binding Timestamp, StringFormat={}{0:MM-dd HH:mm}}" />
+                        <DataGridTextColumn Width="1.15*" Header="源文件" Binding="{Binding SourcePath}" />
+                        <DataGridTextColumn Width="0.65*" Header="状态" Binding="{Binding Status}" />
+                        <DataGridTextColumn Width="0.55*" Header="耗时(s)" Binding="{Binding DurationSeconds}" />
                     </DataGrid.Columns>
                 </DataGrid>
             </Grid>
