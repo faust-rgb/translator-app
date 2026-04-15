@@ -16,13 +16,6 @@ public sealed class AnthropicCompatibleTranslationClient(
     public async Task<string> TranslateAsync(TranslationRequest request, CancellationToken cancellationToken)
     {
         var uri = ApiEndpointResolver.ResolveAnthropicMessagesUri(settings.BaseUrl);
-        using var message = new HttpRequestMessage(HttpMethod.Post, uri);
-        message.Headers.Add("x-api-key", settings.ApiKey);
-        message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", settings.ApiKey);
-        message.Headers.Add("anthropic-version", settings.AnthropicVersion);
-        message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        AddCustomHeaders(message, settings.CustomHeaders);
-
         var payload = new
         {
             model = settings.Model,
@@ -46,24 +39,50 @@ public sealed class AnthropicCompatibleTranslationClient(
                 }
             }
         };
-
-        message.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
         httpClient.Timeout = TimeSpan.FromSeconds(settings.TimeoutSeconds);
 
-        if (request.EnableStreaming && request.OnPartialResponse is not null)
+        var content = JsonSerializer.Serialize(payload);
+        var authModes = new[]
         {
-            return await ReadStreamAsync(message, request, cancellationToken);
+            AnthropicAuthMode.XApiKeyOnly,
+            AnthropicAuthMode.BearerOnly,
+            AnthropicAuthMode.XApiKeyAndBearer
+        };
+
+        Exception? lastException = null;
+        foreach (var authMode in authModes)
+        {
+            try
+            {
+                if (request.EnableStreaming && request.OnPartialResponse is not null)
+                {
+                    return await ReadStreamAsync(uri, content, authMode, request, cancellationToken);
+                }
+
+                using var message = CreateMessage(uri, content, authMode);
+                using var response = await httpClient.SendAsync(message, cancellationToken);
+                await EnsureSuccessWithDetailsAsync(response, cancellationToken);
+                var json = await response.Content.ReadAsStringAsync(cancellationToken);
+                using var document = JsonDocument.Parse(json);
+                return document.RootElement.GetProperty("content")[0].GetProperty("text").GetString()?.Trim() ?? string.Empty;
+            }
+            catch (HttpRequestException ex) when (IsAuthenticationFailure(ex))
+            {
+                lastException = ex;
+            }
         }
 
-        using var response = await httpClient.SendAsync(message, cancellationToken);
-        await EnsureSuccessWithDetailsAsync(response, cancellationToken);
-        var json = await response.Content.ReadAsStringAsync(cancellationToken);
-        using var document = JsonDocument.Parse(json);
-        return document.RootElement.GetProperty("content")[0].GetProperty("text").GetString()?.Trim() ?? string.Empty;
+        throw lastException ?? new InvalidOperationException("Anthropic 兼容请求失败。");
     }
 
-    private async Task<string> ReadStreamAsync(HttpRequestMessage message, TranslationRequest request, CancellationToken cancellationToken)
+    private async Task<string> ReadStreamAsync(
+        Uri uri,
+        string content,
+        AnthropicAuthMode authMode,
+        TranslationRequest request,
+        CancellationToken cancellationToken)
     {
+        using var message = CreateMessage(uri, content, authMode);
         using var response = await httpClient.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         await EnsureSuccessWithDetailsAsync(response, cancellationToken);
         using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -107,6 +126,34 @@ public sealed class AnthropicCompatibleTranslationClient(
         return builder.ToString().Trim();
     }
 
+    private HttpRequestMessage CreateMessage(Uri uri, string content, AnthropicAuthMode authMode)
+    {
+        var message = new HttpRequestMessage(HttpMethod.Post, uri);
+        ApplyAuthHeaders(message, authMode);
+        message.Headers.Add("anthropic-version", settings.AnthropicVersion);
+        message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        AddCustomHeaders(message, settings.CustomHeaders);
+        message.Content = new StringContent(content, Encoding.UTF8, "application/json");
+        return message;
+    }
+
+    private void ApplyAuthHeaders(HttpRequestMessage message, AnthropicAuthMode authMode)
+    {
+        switch (authMode)
+        {
+            case AnthropicAuthMode.XApiKeyOnly:
+                message.Headers.Add("x-api-key", settings.ApiKey);
+                break;
+            case AnthropicAuthMode.BearerOnly:
+                message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", settings.ApiKey);
+                break;
+            case AnthropicAuthMode.XApiKeyAndBearer:
+                message.Headers.Add("x-api-key", settings.ApiKey);
+                message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", settings.ApiKey);
+                break;
+        }
+    }
+
     private static async Task EnsureSuccessWithDetailsAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         if (response.IsSuccessStatusCode)
@@ -124,6 +171,12 @@ public sealed class AnthropicCompatibleTranslationClient(
         throw new HttpRequestException($"HTTP {(int)response.StatusCode} {response.ReasonPhrase}，响应内容：{snippet}");
     }
 
+    private static bool IsAuthenticationFailure(HttpRequestException exception) =>
+        exception.Message.Contains("401", StringComparison.OrdinalIgnoreCase) ||
+        exception.Message.Contains("403", StringComparison.OrdinalIgnoreCase) ||
+        exception.Message.Contains("AuthenticationError", StringComparison.OrdinalIgnoreCase) ||
+        exception.Message.Contains("Unauthorized", StringComparison.OrdinalIgnoreCase);
+
     private static void AddCustomHeaders(HttpRequestMessage message, string rawHeaders)
     {
         if (string.IsNullOrWhiteSpace(rawHeaders))
@@ -139,5 +192,12 @@ public sealed class AnthropicCompatibleTranslationClient(
                 message.Headers.TryAddWithoutValidation(parts[0].Trim(), parts[1].Trim());
             }
         }
+    }
+
+    private enum AnthropicAuthMode
+    {
+        XApiKeyOnly,
+        BearerOnly,
+        XApiKeyAndBearer
     }
 }

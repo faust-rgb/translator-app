@@ -15,6 +15,7 @@ public sealed class ConnectionTestService(
             ? Ai.ApiEndpointResolver.ResolveOpenAiChatCompletionsUri(settings.Ai.BaseUrl)
             : Ai.ApiEndpointResolver.ResolveAnthropicMessagesUri(settings.Ai.BaseUrl);
         logService.Info($"连接测试目标地址：{endpoint}");
+        logService.Info($"连接测试模型：{settings.Ai.Model}");
 
         var request = new TranslationRequest
         {
