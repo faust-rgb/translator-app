@@ -17,5 +17,5 @@ public sealed class TranslationSettings
     public int RetryCount { get; set; } = 2;
     public bool EnableStreaming { get; set; } = true;
     public string PromptTemplate { get; set; } =
-        "你是一名专业文档翻译助手。请把下面内容从{source}翻译为{target}。仅返回译文，不要解释，不要添加标题，不要补充说明。请保留原有列表、换行、数字、符号和占位符。";
+        "你是一名专业文档翻译助手。请把下面内容从{source}翻译为{target}。仅返回译文，不要解释，不要添加标题，不要补充说明。请保留原有段落、列表、换行、数字、符号和占位符，不要漏译正文内容。";
 }

@@ -463,6 +463,25 @@ public partial class MainViewModel : ObservableObject
             Model = settings.Ai.Model;
             BaseUrl = settings.Ai.BaseUrl;
             ApiKey = settings.Ai.ApiKey;
+            AnthropicVersion = settings.Ai.AnthropicVersion;
+            CustomHeaders = settings.Ai.CustomHeaders;
+            Temperature = settings.Ai.Temperature;
+            MaxTokens = settings.Ai.MaxTokens;
+            SourceLanguage = settings.Translation.SourceLanguage;
+            TargetLanguage = settings.Translation.TargetLanguage;
+            OutputDirectory = settings.Translation.OutputDirectory;
+            OutputFontFamily = settings.Translation.OutputFontFamily;
+            OutputFontSize = settings.Translation.OutputFontSize;
+            MaxParallelDocuments = settings.Translation.MaxParallelDocuments;
+            MaxParallelBlocks = settings.Translation.MaxParallelBlocks;
+            MaxGlobalTranslationRequests = settings.Translation.MaxGlobalTranslationRequests;
+            GlossaryPath = settings.Translation.GlossaryPath;
+            ExportBilingualDocument = settings.Translation.ExportBilingualDocument;
+            EnableStreaming = settings.Translation.EnableStreaming;
+            RetryCount = settings.Translation.RetryCount;
+            EnableOcrForScannedPdf = settings.Ocr.EnableOcrForScannedPdf;
+            TesseractDataPath = settings.Ocr.TesseractDataPath;
+            OcrLanguage = settings.Ocr.Language;
             _logService.Info($"已加载配置文件：{Path.GetFileName(dialog.FileName)}");
         }
         catch (Exception ex)

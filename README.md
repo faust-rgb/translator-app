@@ -9,7 +9,9 @@
 - 支持批量加入 `DOCX / XLSX / PPTX / PDF`。
 - Office 文档通过 OpenXML 在本地改写，只向模型发送文本内容。
 - PDF 按页读取，并以文本块级重绘方式替换译文，较之前的逐行覆盖更稳定。
-- PDF 翻译已加入段落块重组、页边噪声过滤、公式保留、块类型识别、OCR 过滤和中文字符级换行，适合论文类 PDF。
+- PDF 翻译已加入段落块重组、跨块断词修复、页边噪声过滤、公式保留、块类型识别、OCR 过滤和中文字符级换行，适合论文类 PDF。
+- 公式检测已区分“纯公式块”和“含公式正文”：纯公式保持原样，含公式正文会继续翻译并提示保留公式/变量/编号。
+- 对 PDF 英文残片、跨页续句和断词续句增加了二次重试与上下文提示，降低正文漏译概率。
 - 支持输出目录、输出字体、字号、日志、总进度、暂停、恢复、停止。
 - 支持流式翻译预览，预览区会自动换行。
 - 支持术语表文件，按 `原文=译文` 或 `原文<TAB>译文` 编写。
@@ -24,6 +26,9 @@
 - Word 翻译会按连续相同格式分组回填译文，尽量保留 Run 级格式边界。
 - 可通过 `publish.ps1` 打包为单文件 EXE。
 - 可通过 `installer.iss` 与 `build-installer.ps1` 生成安装包。
+- 提供两个辅助命令行工具：
+  - `tools/PdfBilingualInspector`：检查 PDF 双语导出中的疑似未翻译片段
+  - `tools/TranslatorCliRunner`：复用本机保存设置，在命令行直接重跑单个文档
 
 ## 运行
 
@@ -71,8 +76,12 @@ dotnet run --project .\TranslatorApp\TranslatorApp.csproj
 
 - `TranslatorApp\bin`
 - `TranslatorApp\obj`
+- `bin_verify_inspector`
+- `obj_cli_runner`
+- `obj_verify_inspector`
 - `publish`
 - `installer-output`
+- `tmp`
 
 ## 接手文档
 

@@ -13,13 +13,18 @@
 - PDF translation heuristics upgraded:
   - custom PDFsharp font resolver for CJK output
   - paragraph-style block merging instead of line-by-line translation
+  - cross-block hyphenation and continuation repair before translation
   - marginal `arXiv` side-note filtering
   - character-based wrapping for Chinese PDF output
-  - formula-like blocks are preserved instead of translated/overwritten
+  - pure formula blocks are preserved, while prose containing formulas is still translated with formula-preservation hints
 - PDF rendering heuristics further upgraded:
   - OCR blocks are filtered for likely page-number / header-footer noise before redraw
   - blocks are classified as title / caption / header-footer / footnote / list / code / table row
   - redraw uses block-aware margin, line-height, hanging-indent, and overflow fallback strategies
+- PDF text translation now retries suspicious English fragments with stronger instructions, and the retry path creates a fresh AI client per attempt to avoid stale-request failures after 504s.
+- Added CLI helpers:
+  - `tools/PdfBilingualInspector` for bilingual export inspection
+  - `tools/TranslatorCliRunner` for headless single-document reruns using saved local settings
 - Word translation preserves formatting more safely by redistributing translated text at continuous-format-group boundaries instead of raw run-length splits
 - Translation concurrency is now explicitly split into:
   - document-level parallelism
@@ -49,7 +54,7 @@ dotnet run --project .\TranslatorApp\TranslatorApp.csproj
 - Third-party model gateways are only "compatible", so endpoint quirks are expected.
 - PDF resume checkpoints are still saved, but PDF output currently regenerates from page 1 after restart because PDFsharp documents cannot be incrementally re-saved and then modified again.
 - PDF layout is much improved, but academic PDFs with dense figures/equations can still need heuristic tuning in `PdfDocumentTranslator.cs`.
-- Inline formulas inside normal prose are still not explicitly protected; standalone formula-like blocks are preserved more reliably than inline expressions.
+- Inline formulas inside normal prose are now handled more carefully, but formula/prose boundary heuristics are still best-effort and should be regression-checked against papers with dense notation.
 - PDF tables and charts are still handled heuristically: original shapes/images stay in place, while detectable text is translated and redrawn.
 
 ## Where To Edit Next

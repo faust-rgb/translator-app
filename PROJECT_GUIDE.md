@@ -30,6 +30,10 @@ The app keeps document processing local and only sends extracted text to an AI m
   Translators for `docx/xlsx/pptx/pdf`.
 - `TranslatorApp/Services/OcrService.cs`
   OCR fallback for scanned PDFs.
+- `tools/PdfBilingualInspector`
+  Inspect bilingual PDF exports for likely untranslated English fragments.
+- `tools/TranslatorCliRunner`
+  Re-run a saved document translation from the command line using local user settings.
 - `TranslatorApp/Services/RecoveryStateService.cs`
   Crash recovery and resume state.
 - `TranslatorApp/Services/TranslationHistoryService.cs`
@@ -74,9 +78,11 @@ dotnet run --project .\TranslatorApp\TranslatorApp.csproj
 - PDF translation currently relies on heuristic block reconstruction:
   - filters marginal noise such as `arXiv` sidebars
   - merges nearby lines into paragraph-like blocks
-  - preserves formula-like blocks instead of translating them
+  - repairs some cross-block hyphenation / continuation splits before translation
+  - distinguishes pure formula blocks from prose that merely contains formulas
   - classifies likely titles, captions, header/footer lines, footnotes, lists, code, and table-like rows
   - uses block-aware redraw margins and overflow fallback
   - wraps translated text character-by-character for Chinese output
+- PDF retry logic now does an extra pass for risky English fragments that come back untranslated, and creates a fresh AI client for each retry attempt.
 - Word translation no longer redistributes translated text at raw run granularity; it groups adjacent runs with identical formatting first to preserve formatting boundaries more safely.
 - If `publish` fails with access denied, the existing `publish\TranslatorApp.exe` is usually still running.

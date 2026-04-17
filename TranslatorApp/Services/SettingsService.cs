@@ -53,11 +53,14 @@ public sealed class SettingsService(
         var json = await File.ReadAllTextAsync(path);
         var settings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? new AppSettings();
 
-        // 从安全存储加载 API Key
-        var secureKey = await secureApiKeyStorage.GetAsync(settings.Ai.ProviderType);
-        if (!string.IsNullOrEmpty(secureKey))
+        // 优先使用配置文件中的 API Key；仅当文件未提供时才回退到安全存储。
+        if (string.IsNullOrWhiteSpace(settings.Ai.ApiKey))
         {
-            settings.Ai.ApiKey = secureKey;
+            var secureKey = await secureApiKeyStorage.GetAsync(settings.Ai.ProviderType);
+            if (!string.IsNullOrEmpty(secureKey))
+            {
+                settings.Ai.ApiKey = secureKey;
+            }
         }
 
         return settings;
@@ -82,16 +85,14 @@ public sealed class SettingsService(
 
     public async Task SaveToFileAsync(AppSettings settings, string path)
     {
-        // 创建不包含敏感信息的副本
-        var settingsForSave = CreateSafeSettingsCopy(settings);
-
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(directory))
         {
             Directory.CreateDirectory(directory);
         }
 
-        var json = JsonSerializer.Serialize(settingsForSave, JsonOptions);
+        // 导出配置文件时保留 API Key，方便跨机器/跨目录迁移。
+        var json = JsonSerializer.Serialize(settings, JsonOptions);
         await File.WriteAllTextAsync(path, json);
     }
 

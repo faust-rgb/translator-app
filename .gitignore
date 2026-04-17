@@ -2,9 +2,15 @@ bin/
 obj/
 obj_verify/
 obj_verify_test/
+obj_cli_runner/
+obj_verify_inspector/
+bin_verify_inspector/
 publish/
 .vs/
 *.user
 *.suo
 *.pdb
 *.working
+tmp/
+tmp-bilingual-check.docx
+tools/PdfBilingualInspector/tools/
