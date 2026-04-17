@@ -31,7 +31,8 @@ public sealed class GlossaryService(IAppLogService logService) : IGlossaryServic
     public string BuildPromptSection(string text, IReadOnlyList<GlossaryEntry> entries)
     {
         var matched = entries
-            .Where(x => text.Contains(x.Source, StringComparison.OrdinalIgnoreCase))
+            .Where(x => !string.IsNullOrWhiteSpace(x.Source) && text.Contains(x.Source, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(x => x.Source.Length)
             .Take(30)
             .ToList();
 
@@ -45,9 +46,19 @@ public sealed class GlossaryService(IAppLogService logService) : IGlossaryServic
 
     public void Dispose()
     {
-        foreach (var watcher in _watchers.Values)
+        foreach (var glossaryPath in _watchers.Keys.ToList())
         {
-            watcher.Dispose();
+            if (_watchers.TryRemove(glossaryPath, out var watcher))
+            {
+                try
+                {
+                    watcher.EnableRaisingEvents = false;
+                    watcher.Dispose();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+            }
         }
     }
 
@@ -62,21 +73,24 @@ public sealed class GlossaryService(IAppLogService logService) : IGlossaryServic
 
             void Reload(object? _, FileSystemEventArgs __)
             {
-                try
+                _ = Task.Run(async () =>
                 {
-                    if (!File.Exists(path))
+                    try
                     {
-                        _cache[path] = Array.Empty<GlossaryEntry>();
-                        return;
-                    }
+                        if (!File.Exists(path))
+                        {
+                            _cache[path] = Array.Empty<GlossaryEntry>();
+                            return;
+                        }
 
-                    _cache[path] = LoadEntriesAsync(path, CancellationToken.None).GetAwaiter().GetResult();
-                    logService.Info($"术语表已热加载：{Path.GetFileName(path)}");
-                }
-                catch (Exception ex)
-                {
-                    logService.Error($"术语表重载失败：{ex.Message}");
-                }
+                        _cache[path] = await LoadEntriesAsync(path, CancellationToken.None);
+                        logService.Info($"术语表已热加载：{Path.GetFileName(path)}");
+                    }
+                    catch (Exception ex)
+                    {
+                        logService.Error($"术语表重载失败：{ex.Message}");
+                    }
+                });
             }
 
             watcher.Changed += Reload;

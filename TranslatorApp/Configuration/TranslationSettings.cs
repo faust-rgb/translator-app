@@ -10,6 +10,8 @@ public sealed class TranslationSettings
     public string OutputFontFamily { get; set; } = PdfSharpFontResolver.DefaultFontFamily;
     public double OutputFontSize { get; set; } = 11;
     public int MaxParallelDocuments { get; set; } = 1;
+    public int MaxParallelBlocks { get; set; } = 1;
+    public int MaxGlobalTranslationRequests { get; set; } = 1;
     public string GlossaryPath { get; set; } = string.Empty;
     public bool ExportBilingualDocument { get; set; } = true;
     public int RetryCount { get; set; } = 2;

@@ -41,6 +41,7 @@ public partial class App : Application
 
                 services.AddHttpClient();
 
+                services.AddSingleton<ISecureApiKeyStorage, SecureApiKeyStorage>();
                 services.AddSingleton<ISettingsService, SettingsService>();
                 services.AddSingleton<IAppLogService, AppLogService>();
                 services.AddSingleton<IConnectionTestService, ConnectionTestService>();
@@ -49,6 +50,7 @@ public partial class App : Application
                 services.AddSingleton<ITranslationHistoryService, TranslationHistoryService>();
                 services.AddSingleton<IRecoveryStateService, RecoveryStateService>();
                 services.AddSingleton<ITranslationProgressService, TranslationProgressService>();
+                services.AddSingleton<ITranslationRequestThrottle, TranslationRequestThrottle>();
                 services.AddSingleton<IOcrService, OcrService>();
                 services.AddSingleton<IAiTranslationClientFactory, AiTranslationClientFactory>();
                 services.AddSingleton<ITranslationPromptBuilder, TranslationPromptBuilder>();

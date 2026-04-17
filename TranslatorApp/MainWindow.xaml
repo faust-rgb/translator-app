@@ -6,9 +6,9 @@
         xmlns:converters="clr-namespace:TranslatorApp.Converters"
         mc:Ignorable="d"
         Title="AI 文档翻译器"
-        Height="748"
+        Height="860"
         Width="1420"
-        MinHeight="640"
+        MinHeight="720"
         MinWidth="1120"
         Icon="Assets/app-icon.png"
         Loaded="Window_Loaded">
@@ -152,7 +152,17 @@
                     <Button Style="{StaticResource CompactButtonStyle}" Margin="0,0,0,0" Command="{Binding PickTesseractDataDirectoryCommand}" Content="选择 tessdata" />
                 </StackPanel>
 
-                <Border Grid.Column="4" Background="Transparent" />
+                <StackPanel Grid.Column="4">
+                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="文档级并发" />
+                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding MaxParallelDocuments, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="块级并发" />
+                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding MaxParallelBlocks, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="全局请求并发" />
+                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding MaxGlobalTranslationRequests, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBlock Foreground="#FF666666"
+                               TextWrapping="Wrap"
+                               Text="安全模式建议：块级并发 1，全局请求并发 1。即使同时处理多个文档，也会统一节流远端请求。" />
+                </StackPanel>
             </Grid>
         </Border>
 
@@ -226,9 +236,9 @@
         <Border Grid.Row="4" Padding="10" Background="#FFF3F3F3" CornerRadius="10">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="1.0*" />
-                    <ColumnDefinition Width="1.05*" />
                     <ColumnDefinition Width="0.95*" />
+                    <ColumnDefinition Width="1.2*" />
+                    <ColumnDefinition Width="0.9*" />
                 </Grid.ColumnDefinitions>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
@@ -243,28 +253,27 @@
                     <Button DockPanel.Dock="Right" Margin="8,0,0,0" Height="22" Padding="10,1" Command="{Binding ClearHistoryCommand}" Content="清空历史" />
                 </DockPanel>
 
-                <TextBox Grid.Row="1"
-                         Margin="0,6,8,0"
-                         FontFamily="Consolas"
-                         FontSize="12"
-                         IsReadOnly="True"
-                         TextWrapping="Wrap"
-                         HorizontalScrollBarVisibility="Auto"
-                         VerticalScrollBarVisibility="Visible"
-                         AcceptsReturn="True"
-                         Text="{Binding StreamPreviewText}" />
+                <ScrollViewer Grid.Row="1"
+                              Margin="0,6,8,0"
+                              HorizontalScrollBarVisibility="Disabled"
+                              VerticalScrollBarVisibility="Visible">
+                    <TextBlock FontFamily="Consolas"
+                               FontSize="12"
+                               TextWrapping="Wrap"
+                               Width="{Binding ActualWidth, RelativeSource={RelativeSource AncestorType=ScrollContentPresenter}}"
+                               Text="{Binding StreamPreviewText}" />
+                </ScrollViewer>
 
-                <TextBox Grid.Row="1"
-                         Grid.Column="1"
-                         Margin="8,6,8,0"
-                         FontFamily="Consolas"
-                         FontSize="12"
-                         IsReadOnly="True"
-                         TextWrapping="Wrap"
-                         HorizontalScrollBarVisibility="Auto"
-                         VerticalScrollBarVisibility="Visible"
-                         AcceptsReturn="True"
-                         Text="{Binding LogText}" />
+                <ScrollViewer Grid.Row="1"
+                              Grid.Column="1"
+                              Margin="8,6,8,0"
+                              HorizontalScrollBarVisibility="Auto"
+                              VerticalScrollBarVisibility="Visible">
+                    <TextBlock FontFamily="Consolas"
+                               FontSize="12"
+                               TextWrapping="Wrap"
+                               Text="{Binding LogText}" />
+                </ScrollViewer>
 
                 <DataGrid Grid.Row="1"
                           Grid.Column="2"

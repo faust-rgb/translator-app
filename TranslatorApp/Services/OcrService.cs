@@ -11,6 +11,10 @@ namespace TranslatorApp.Services;
 
 public sealed class OcrService(IAppLogService logService) : IOcrService
 {
+    private const double MinRenderScale = 0.5;
+    private const double MaxRenderScale = 3.0;
+    private const float MinimumAcceptedConfidence = 35;
+
     public Task<IReadOnlyList<OcrTextBlock>> RecognizePdfPageAsync(string pdfPath, int pageIndex, OcrSettings settings, CancellationToken cancellationToken)
     {
         if (!settings.EnableOcrForScannedPdf)
@@ -27,55 +31,80 @@ public sealed class OcrService(IAppLogService logService) : IOcrService
 
         return Task.Run(() =>
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            using var docLib = DocLib.Instance;
-            using var docReader = docLib.GetDocReader(pdfPath, new PageDimensions(settings.RenderScale));
-            using var pageReader = docReader.GetPageReader(pageIndex);
-
-            var width = pageReader.GetPageWidth();
-            var height = pageReader.GetPageHeight();
-            var imageBytes = pageReader.GetImage();
-            var pngBytes = ConvertRawBgraToPng(imageBytes, width, height);
-
-            using var engine = new TesseractEngine(tessPath, settings.Language, EngineMode.Default);
-            engine.DefaultPageSegMode = PageSegMode.Auto;
-            using var pix = Pix.LoadFromMemory(pngBytes);
-            using var page = engine.Process(pix);
-            using var iterator = page.GetIterator();
-            iterator.Begin();
-
-            var words = new List<OcrWord>();
-            do
+            try
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var text = iterator.GetText(PageIteratorLevel.Word);
-                if (string.IsNullOrWhiteSpace(text))
-                {
-                    continue;
-                }
 
-                if (iterator.TryGetBoundingBox(PageIteratorLevel.Word, out var rect))
+                var renderScale = Math.Clamp(settings.RenderScale, MinRenderScale, MaxRenderScale);
+                using var docLib = DocLib.Instance;
+                using var docReader = docLib.GetDocReader(pdfPath, new PageDimensions(renderScale));
+                using var pageReader = docReader.GetPageReader(pageIndex);
+
+                var width = pageReader.GetPageWidth();
+                var height = pageReader.GetPageHeight();
+                var imageBytes = pageReader.GetImage();
+                var pngBytes = ConvertRawBgraToPng(imageBytes, width, height);
+
+                using var engine = new TesseractEngine(tessPath, settings.Language, EngineMode.Default);
+                engine.DefaultPageSegMode = PageSegMode.Auto;
+                using var page = ProcessImage(engine, pngBytes);
+                using var iterator = page.GetIterator();
+                iterator.Begin();
+
+                var words = new List<OcrWord>();
+                var skippedLowConfidence = 0;
+                do
                 {
-                    var confidence = iterator.GetConfidence(PageIteratorLevel.Word);
-                    if (confidence < 35)
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var text = iterator.GetText(PageIteratorLevel.Word);
+                    if (string.IsNullOrWhiteSpace(text))
                     {
                         continue;
                     }
 
-                    words.Add(new OcrWord(
-                        text.Trim(),
-                        rect.X1 / settings.RenderScale,
-                        rect.Y1 / settings.RenderScale,
-                        rect.X2 / settings.RenderScale,
-                        rect.Y2 / settings.RenderScale,
-                        confidence));
-                }
-            }
-            while (iterator.Next(PageIteratorLevel.Word));
+                    if (iterator.TryGetBoundingBox(PageIteratorLevel.Word, out var rect))
+                    {
+                        var confidence = iterator.GetConfidence(PageIteratorLevel.Word);
+                        if (confidence < MinimumAcceptedConfidence)
+                        {
+                            skippedLowConfidence++;
+                            continue;
+                        }
 
-            return BuildBlocks(words, width / settings.RenderScale);
+                        words.Add(new OcrWord(
+                            text.Trim(),
+                            rect.X1 / renderScale,
+                            rect.Y1 / renderScale,
+                            rect.X2 / renderScale,
+                            rect.Y2 / renderScale,
+                            confidence));
+                    }
+                }
+                while (iterator.Next(PageIteratorLevel.Word));
+
+                if (skippedLowConfidence > 0)
+                {
+                    logService.Info($"OCR 第 {pageIndex + 1} 页跳过了 {skippedLowConfidence} 个低置信度词。");
+                }
+
+                return BuildBlocks(words, width / renderScale);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                logService.Error($"OCR 第 {pageIndex + 1} 页处理失败，已跳过该页 OCR：{ex}");
+                return Array.Empty<OcrTextBlock>();
+            }
         }, cancellationToken);
+    }
+
+    private static Page ProcessImage(TesseractEngine engine, byte[] pngBytes)
+    {
+        using var pix = Pix.LoadFromMemory(pngBytes);
+        return engine.Process(pix);
     }
 
     private static IReadOnlyList<OcrTextBlock> BuildBlocks(IReadOnlyList<OcrWord> words, double pageWidth)

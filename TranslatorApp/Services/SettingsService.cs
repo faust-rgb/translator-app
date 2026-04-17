@@ -5,7 +5,9 @@ using TranslatorApp.Configuration;
 
 namespace TranslatorApp.Services;
 
-public sealed class SettingsService(IOptions<AppSettings> initialOptions) : ISettingsService
+public sealed class SettingsService(
+    IOptions<AppSettings> initialOptions,
+    ISecureApiKeyStorage secureApiKeyStorage) : ISettingsService
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -17,16 +19,28 @@ public sealed class SettingsService(IOptions<AppSettings> initialOptions) : ISet
         "TranslatorApp",
         "user-settings.json");
 
-    public Task<AppSettings> LoadAsync()
+    public async Task<AppSettings> LoadAsync()
     {
+        AppSettings settings;
+
         if (!File.Exists(_settingsPath))
         {
-            return Task.FromResult(initialOptions.Value);
+            settings = initialOptions.Value;
+        }
+        else
+        {
+            var json = await File.ReadAllTextAsync(_settingsPath);
+            settings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? new AppSettings();
         }
 
-        var json = File.ReadAllText(_settingsPath);
-        var settings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? new AppSettings();
-        return Task.FromResult(settings);
+        // 从安全存储加载 API Key
+        var secureKey = await secureApiKeyStorage.GetAsync(settings.Ai.ProviderType);
+        if (!string.IsNullOrEmpty(secureKey))
+        {
+            settings.Ai.ApiKey = secureKey;
+        }
+
+        return settings;
     }
 
     public async Task<AppSettings> LoadFromFileAsync(string path)
@@ -37,26 +51,92 @@ public sealed class SettingsService(IOptions<AppSettings> initialOptions) : ISet
         }
 
         var json = await File.ReadAllTextAsync(path);
-        return JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? new AppSettings();
+        var settings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? new AppSettings();
+
+        // 从安全存储加载 API Key
+        var secureKey = await secureApiKeyStorage.GetAsync(settings.Ai.ProviderType);
+        if (!string.IsNullOrEmpty(secureKey))
+        {
+            settings.Ai.ApiKey = secureKey;
+        }
+
+        return settings;
     }
 
     public async Task SaveAsync(AppSettings settings)
     {
+        // 保存 API Key 到安全存储
+        if (!string.IsNullOrEmpty(settings.Ai.ApiKey))
+        {
+            await secureApiKeyStorage.SetAsync(settings.Ai.ProviderType, settings.Ai.ApiKey);
+        }
+
+        // 创建不包含敏感信息的副本
+        var settingsForSave = CreateSafeSettingsCopy(settings);
+
         var directory = Path.GetDirectoryName(_settingsPath)!;
         Directory.CreateDirectory(directory);
-        var json = JsonSerializer.Serialize(settings, JsonOptions);
+        var json = JsonSerializer.Serialize(settingsForSave, JsonOptions);
         await File.WriteAllTextAsync(_settingsPath, json);
     }
 
     public async Task SaveToFileAsync(AppSettings settings, string path)
     {
+        // 创建不包含敏感信息的副本
+        var settingsForSave = CreateSafeSettingsCopy(settings);
+
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(directory))
         {
             Directory.CreateDirectory(directory);
         }
 
-        var json = JsonSerializer.Serialize(settings, JsonOptions);
+        var json = JsonSerializer.Serialize(settingsForSave, JsonOptions);
         await File.WriteAllTextAsync(path, json);
+    }
+
+    /// <summary>
+    /// 创建不包含敏感信息的设置副本。
+    /// </summary>
+    private static AppSettings CreateSafeSettingsCopy(AppSettings settings)
+    {
+        return new AppSettings
+        {
+            Ai = new AiSettings
+            {
+                ProviderType = settings.Ai.ProviderType,
+                BaseUrl = settings.Ai.BaseUrl,
+                ApiKey = string.Empty, // 不保存 API Key 到普通配置文件
+                Model = settings.Ai.Model,
+                AnthropicVersion = settings.Ai.AnthropicVersion,
+                Temperature = settings.Ai.Temperature,
+                MaxTokens = settings.Ai.MaxTokens,
+                CustomHeaders = settings.Ai.CustomHeaders,
+                TimeoutSeconds = settings.Ai.TimeoutSeconds
+            },
+            Translation = new TranslationSettings
+            {
+                SourceLanguage = settings.Translation.SourceLanguage,
+                TargetLanguage = settings.Translation.TargetLanguage,
+                OutputDirectory = settings.Translation.OutputDirectory,
+                OutputFontFamily = settings.Translation.OutputFontFamily,
+                OutputFontSize = settings.Translation.OutputFontSize,
+                MaxParallelDocuments = settings.Translation.MaxParallelDocuments,
+                MaxParallelBlocks = settings.Translation.MaxParallelBlocks,
+                MaxGlobalTranslationRequests = settings.Translation.MaxGlobalTranslationRequests,
+                GlossaryPath = settings.Translation.GlossaryPath,
+                ExportBilingualDocument = settings.Translation.ExportBilingualDocument,
+                EnableStreaming = settings.Translation.EnableStreaming,
+                RetryCount = settings.Translation.RetryCount,
+                PromptTemplate = settings.Translation.PromptTemplate
+            },
+            Ocr = new OcrSettings
+            {
+                EnableOcrForScannedPdf = settings.Ocr.EnableOcrForScannedPdf,
+                Language = settings.Ocr.Language,
+                RenderScale = settings.Ocr.RenderScale,
+                MinimumNativeTextWords = settings.Ocr.MinimumNativeTextWords
+            }
+        };
     }
 }

@@ -50,6 +50,7 @@ public sealed class AnthropicCompatibleTranslationClient(
         };
 
         Exception? lastException = null;
+        var attemptedModes = new List<string>();
         foreach (var authMode in authModes)
         {
             try
@@ -68,10 +69,19 @@ public sealed class AnthropicCompatibleTranslationClient(
             catch (HttpRequestException ex) when (IsAuthenticationFailure(ex))
             {
                 lastException = ex;
+                attemptedModes.Add($"{authMode} -> {ex.Message}");
             }
         }
 
-        throw lastException ?? new InvalidOperationException("Anthropic 兼容请求失败。");
+        if (lastException is null)
+        {
+            throw new InvalidOperationException("Anthropic 兼容请求失败。");
+        }
+
+        var attempts = attemptedModes.Count == 0
+            ? "未记录到鉴权尝试。"
+            : "已尝试鉴权方式：" + Environment.NewLine + string.Join(Environment.NewLine, attemptedModes.Select(x => $"- {x}"));
+        throw new InvalidOperationException($"Anthropic 兼容请求失败。{Environment.NewLine}{attempts}", lastException);
     }
 
     private async Task<string> ReadStreamAsync(
