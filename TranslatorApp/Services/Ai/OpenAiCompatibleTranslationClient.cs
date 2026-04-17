@@ -38,6 +38,7 @@ public sealed class OpenAiCompatibleTranslationClient(
         httpClient.Timeout = TimeSpan.FromSeconds(settings.TimeoutSeconds);
         var content = JsonSerializer.Serialize(payload);
         Exception? lastException = null;
+        var attemptedEndpoints = new List<string>();
 
         foreach (var uri in ApiEndpointResolver.ResolveOpenAiChatCompletionsUris(settings.BaseUrl))
         {
@@ -58,10 +59,19 @@ public sealed class OpenAiCompatibleTranslationClient(
             catch (Exception ex) when (IsEndpointCompatibilityFailure(ex))
             {
                 lastException = ex;
+                attemptedEndpoints.Add($"{uri} -> {ex.Message}");
             }
         }
 
-        throw lastException ?? new InvalidOperationException("OpenAI 兼容请求失败。");
+        if (lastException is null)
+        {
+            throw new InvalidOperationException("OpenAI 兼容请求失败。");
+        }
+
+        var attempts = attemptedEndpoints.Count == 0
+            ? "未记录到候选端点。"
+            : "已尝试端点：" + Environment.NewLine + string.Join(Environment.NewLine, attemptedEndpoints.Select(x => $"- {x}"));
+        throw new InvalidOperationException($"OpenAI 兼容请求失败。{Environment.NewLine}{attempts}", lastException);
     }
 
     private async Task<string> ReadStreamAsync(HttpRequestMessage message, TranslationRequest request, CancellationToken cancellationToken)

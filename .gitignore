@@ -1,5 +1,7 @@
 bin/
 obj/
+obj_verify/
+obj_verify_test/
 publish/
 .vs/
 *.user

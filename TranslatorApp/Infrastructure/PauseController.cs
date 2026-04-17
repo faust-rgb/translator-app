@@ -4,40 +4,57 @@ namespace TranslatorApp.Infrastructure;
 
 public sealed class PauseController
 {
-    private volatile TaskCompletionSource<bool> _resumeSignal = CreateSignal();
+    private readonly object _syncRoot = new();
+    private TaskCompletionSource<bool> _resumeSignal = CreateSignal();
+    private bool _isPaused;
 
-    public bool IsPaused { get; private set; }
+    public bool IsPaused => _isPaused;
 
     public void Pause()
     {
-        if (IsPaused)
+        lock (_syncRoot)
         {
-            return;
-        }
+            if (_isPaused)
+            {
+                return;
+            }
 
-        IsPaused = true;
-        _resumeSignal = CreateSignal();
+            _resumeSignal = CreateSignal();
+            _isPaused = true;
+        }
     }
 
     public void Resume()
     {
-        if (!IsPaused)
+        TaskCompletionSource<bool>? signal = null;
+        lock (_syncRoot)
         {
-            return;
+            if (!_isPaused)
+            {
+                return;
+            }
+
+            _isPaused = false;
+            signal = _resumeSignal;
         }
 
-        IsPaused = false;
-        _resumeSignal.TrySetResult(true);
+        signal.TrySetResult(true);
     }
 
     public Task WaitIfPausedAsync(CancellationToken cancellationToken)
     {
-        if (!IsPaused)
+        TaskCompletionSource<bool>? signal = null;
+        lock (_syncRoot)
         {
-            return Task.CompletedTask;
+            if (!_isPaused)
+            {
+                return Task.CompletedTask;
+            }
+
+            signal = _resumeSignal;
         }
 
-        return _resumeSignal.Task.WaitAsync(cancellationToken);
+        return signal.Task.WaitAsync(cancellationToken);
     }
 
     private static TaskCompletionSource<bool> CreateSignal() =>

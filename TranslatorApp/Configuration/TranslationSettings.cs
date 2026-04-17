@@ -1,3 +1,5 @@
+using TranslatorApp.Infrastructure;
+
 namespace TranslatorApp.Configuration;
 
 public sealed class TranslationSettings
@@ -5,9 +7,11 @@ public sealed class TranslationSettings
     public string SourceLanguage { get; set; } = "自动检测";
     public string TargetLanguage { get; set; } = "中文";
     public string OutputDirectory { get; set; } = string.Empty;
-    public string OutputFontFamily { get; set; } = "Microsoft YaHei UI";
+    public string OutputFontFamily { get; set; } = PdfSharpFontResolver.DefaultFontFamily;
     public double OutputFontSize { get; set; } = 11;
     public int MaxParallelDocuments { get; set; } = 1;
+    public int MaxParallelBlocks { get; set; } = 1;
+    public int MaxGlobalTranslationRequests { get; set; } = 1;
     public string GlossaryPath { get; set; } = string.Empty;
     public bool ExportBilingualDocument { get; set; } = true;
     public int RetryCount { get; set; } = 2;

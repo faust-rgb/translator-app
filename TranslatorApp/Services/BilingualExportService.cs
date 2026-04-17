@@ -6,7 +6,7 @@ using TranslatorApp.Models;
 
 namespace TranslatorApp.Services;
 
-public sealed class BilingualExportService : IBilingualExportService
+public sealed class BilingualExportService(IAppLogService logService) : IBilingualExportService
 {
     public Task ExportAsync(string sourcePath, string outputDirectory, IReadOnlyList<BilingualSegment> segments, CancellationToken cancellationToken)
     {
@@ -14,6 +14,8 @@ public sealed class BilingualExportService : IBilingualExportService
         {
             return Task.CompletedTask;
         }
+
+        logService.Info("正在导出双语对照文档。若原文包含敏感内容，导出文件会同时包含原文和译文。");
 
         var baseDirectory = string.IsNullOrWhiteSpace(outputDirectory)
             ? Path.GetDirectoryName(sourcePath)!

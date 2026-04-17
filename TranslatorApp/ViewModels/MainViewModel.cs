@@ -8,6 +8,7 @@ using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
 using Ookii.Dialogs.Wpf;
 using TranslatorApp.Configuration;
+using TranslatorApp.Infrastructure;
 using TranslatorApp.Models;
 using TranslatorApp.Services;
 using TranslatorApp.Services.Documents;
@@ -16,6 +17,8 @@ namespace TranslatorApp.ViewModels;
 
 public partial class MainViewModel : ObservableObject
 {
+    private const int MaxLogLines = 400;
+    private const int MaxStreamPreviewCharacters = 12000;
     private readonly ISettingsService _settingsService;
     private readonly IDocumentTranslationCoordinator _coordinator;
     private readonly IAppLogService _logService;
@@ -54,13 +57,19 @@ public partial class MainViewModel : ObservableObject
     private string outputDirectory = string.Empty;
 
     [ObservableProperty]
-    private string outputFontFamily = "Microsoft YaHei UI";
+    private string outputFontFamily = PdfSharpFontResolver.DefaultFontFamily;
 
     [ObservableProperty]
     private double outputFontSize = 11;
 
     [ObservableProperty]
     private int maxParallelDocuments = 1;
+
+    [ObservableProperty]
+    private int maxParallelBlocks = 1;
+
+    [ObservableProperty]
+    private int maxGlobalTranslationRequests = 1;
 
     [ObservableProperty]
     private double temperature = 0.1;
@@ -139,6 +148,69 @@ public partial class MainViewModel : ObservableObject
         "印地语"
     ];
 
+    partial void OnTemperatureChanged(double value)
+    {
+        var clamped = Math.Clamp(value, 0, 2);
+        if (clamped != value)
+        {
+            temperature = clamped;
+        }
+    }
+
+    partial void OnMaxTokensChanged(int value)
+    {
+        var clamped = Math.Max(1, value);
+        if (clamped != value)
+        {
+            maxTokens = clamped;
+        }
+    }
+
+    partial void OnOutputFontSizeChanged(double value)
+    {
+        var clamped = Math.Clamp(value, 6, 72);
+        if (clamped != value)
+        {
+            outputFontSize = clamped;
+        }
+    }
+
+    partial void OnMaxParallelDocumentsChanged(int value)
+    {
+        var clamped = Math.Max(1, value);
+        if (clamped != value)
+        {
+            maxParallelDocuments = clamped;
+        }
+    }
+
+    partial void OnMaxParallelBlocksChanged(int value)
+    {
+        var clamped = Math.Max(1, value);
+        if (clamped != value)
+        {
+            maxParallelBlocks = clamped;
+        }
+    }
+
+    partial void OnMaxGlobalTranslationRequestsChanged(int value)
+    {
+        var clamped = Math.Max(1, value);
+        if (clamped != value)
+        {
+            maxGlobalTranslationRequests = clamped;
+        }
+    }
+
+    partial void OnRetryCountChanged(int value)
+    {
+        var clamped = Math.Clamp(value, 0, 10);
+        if (clamped != value)
+        {
+            retryCount = clamped;
+        }
+    }
+
     public MainViewModel(
         ISettingsService settingsService,
         IDocumentTranslationCoordinator coordinator,
@@ -157,12 +229,12 @@ public partial class MainViewModel : ObservableObject
         _connectionTestService = connectionTestService;
         _logService.LogAdded += (_, line) =>
         {
-            LogText = string.IsNullOrWhiteSpace(LogText) ? line : $"{LogText}{Environment.NewLine}{line}";
+            LogText = AppendLogLine(LogText, line);
         };
         _translationProgressService.StreamUpdated += (_, args) =>
         {
             StreamPreviewTitle = string.IsNullOrWhiteSpace(args.Title) ? "实时译文预览" : $"实时译文预览 - {args.Title}";
-            StreamPreviewText = args.PartialText;
+            StreamPreviewText = TrimToMaxCharacters(args.PartialText, MaxStreamPreviewCharacters);
         };
         Documents.CollectionChanged += OnDocumentsCollectionChanged;
     }
@@ -182,6 +254,8 @@ public partial class MainViewModel : ObservableObject
         OutputFontFamily = settings.Translation.OutputFontFamily;
         OutputFontSize = settings.Translation.OutputFontSize;
         MaxParallelDocuments = settings.Translation.MaxParallelDocuments;
+        MaxParallelBlocks = settings.Translation.MaxParallelBlocks;
+        MaxGlobalTranslationRequests = settings.Translation.MaxGlobalTranslationRequests;
         GlossaryPath = settings.Translation.GlossaryPath;
         ExportBilingualDocument = settings.Translation.ExportBilingualDocument;
         EnableStreaming = settings.Translation.EnableStreaming;
@@ -301,9 +375,24 @@ public partial class MainViewModel : ObservableObject
         }
 
         var checkpoint = await _recoveryStateService.GetCheckpointAsync(item.SourcePath);
+        if (checkpoint is null)
+        {
+            _logService.Info($"任务 {Path.GetFileName(item.SourcePath)} 没有找到检查点，将从头开始。");
+        }
+        else
+        {
+            var progressInfo = checkpoint.UnitIndex > 0
+                ? $"已完成约 {checkpoint.Progress}%（单元 {checkpoint.UnitIndex}"
+                : $"已完成约 {checkpoint.Progress}%";
+            var subInfo = checkpoint.SubUnitIndex > 0
+                ? $", 子单元 {checkpoint.SubUnitIndex}）"
+                : "）";
+            _logService.Info($"任务 {Path.GetFileName(item.SourcePath)} 将从检查点继续：{progressInfo}{subInfo}，上次更新：{checkpoint.UpdatedAt:yyyy-MM-dd HH:mm:ss}");
+        }
+
         item.Status = DocumentStatus.Pending;
         item.ErrorMessage = null;
-        item.ProgressText = item.Progress > 0 ? $"等待继续：{item.ProgressText}" : "等待开始";
+        item.ProgressText = item.Progress > 0 ? $"等待继续：{checkpoint?.ProgressText ?? item.ProgressText}" : "等待开始";
         await _recoveryStateService.SaveCheckpointAsync(new DocumentCheckpoint
         {
             SourcePath = item.SourcePath,
@@ -315,7 +404,7 @@ public partial class MainViewModel : ObservableObject
             UnitIndex = checkpoint?.UnitIndex ?? 0,
             SubUnitIndex = checkpoint?.SubUnitIndex ?? 0,
             ErrorMessage = null,
-            UpdatedAt = DateTime.Now
+            UpdatedAt = DateTime.UtcNow
         });
         _logService.Info($"任务已设为继续：{Path.GetFileName(item.SourcePath)}");
     }
@@ -351,6 +440,71 @@ public partial class MainViewModel : ObservableObject
         if (dialog.ShowDialog() == true)
         {
             TesseractDataPath = dialog.SelectedPath;
+        }
+    }
+
+    [RelayCommand]
+    private async Task LoadConfigFileAsync()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Filter = "JSON 配置文件|*.json|全部文件|*.*"
+        };
+
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        try
+        {
+            var settings = await _settingsService.LoadFromFileAsync(dialog.FileName);
+            ProviderType = string.IsNullOrWhiteSpace(settings.Ai.ProviderType) ? ProviderType : settings.Ai.ProviderType;
+            Model = settings.Ai.Model;
+            BaseUrl = settings.Ai.BaseUrl;
+            ApiKey = settings.Ai.ApiKey;
+            _logService.Info($"已加载配置文件：{Path.GetFileName(dialog.FileName)}");
+        }
+        catch (Exception ex)
+        {
+            _logService.Error($"加载配置文件失败：{ex.Message}");
+        }
+    }
+
+    [RelayCommand]
+    private async Task ExportConfigFileAsync()
+    {
+        var dialog = new SaveFileDialog
+        {
+            Filter = "JSON 配置文件|*.json|全部文件|*.*",
+            FileName = "ai-config.json",
+            DefaultExt = ".json"
+        };
+
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        try
+        {
+            var settings = new AppSettings
+            {
+                Ai = new AiSettings
+                {
+                    ProviderType = ProviderType,
+                    BaseUrl = BaseUrl,
+                    ApiKey = ApiKey,
+                    Model = Model
+                }
+            };
+
+            await _settingsService.SaveToFileAsync(settings, dialog.FileName);
+            _logService.Info($"已导出配置文件：{Path.GetFileName(dialog.FileName)}");
+        }
+        catch (Exception ex)
+        {
+            _logService.Error($"导出配置文件失败：{ex.Message}");
         }
     }
 
@@ -521,8 +675,8 @@ public partial class MainViewModel : ObservableObject
                 Model = Model,
                 AnthropicVersion = AnthropicVersion,
                 CustomHeaders = CustomHeaders,
-                Temperature = Temperature,
-                MaxTokens = MaxTokens
+                Temperature = Math.Clamp(Temperature, 0, 2),
+                MaxTokens = Math.Max(1, MaxTokens)
             },
             Translation = new TranslationSettings
             {
@@ -530,12 +684,14 @@ public partial class MainViewModel : ObservableObject
                 TargetLanguage = TargetLanguage,
                 OutputDirectory = OutputDirectory,
                 OutputFontFamily = OutputFontFamily,
-                OutputFontSize = OutputFontSize,
-                MaxParallelDocuments = 1,
+                OutputFontSize = Math.Clamp(OutputFontSize, 6, 72),
+                MaxParallelDocuments = Math.Max(1, MaxParallelDocuments),
+                MaxParallelBlocks = Math.Max(1, MaxParallelBlocks),
+                MaxGlobalTranslationRequests = Math.Max(1, MaxGlobalTranslationRequests),
                 GlossaryPath = GlossaryPath,
                 ExportBilingualDocument = ExportBilingualDocument,
                 EnableStreaming = EnableStreaming,
-                RetryCount = RetryCount
+                RetryCount = Math.Clamp(RetryCount, 0, 10)
             },
             Ocr = new Configuration.OcrSettings
             {
@@ -553,5 +709,53 @@ public partial class MainViewModel : ObservableObject
         {
             HistoryItems.Add(item);
         }
+    }
+
+    private static string AppendLogLine(string current, string nextLine)
+    {
+        if (string.IsNullOrWhiteSpace(nextLine))
+        {
+            return current;
+        }
+
+        var combined = string.IsNullOrWhiteSpace(current)
+            ? nextLine
+            : string.Concat(current, Environment.NewLine, nextLine);
+
+        var lineCount = combined.AsSpan().Count('\n');
+
+        if (lineCount < MaxLogLines)
+        {
+            return combined;
+        }
+
+        var linesToSkip = lineCount - MaxLogLines + 1;
+        var skipped = 0;
+        var cutIndex = 0;
+        for (var i = 0; i < combined.Length; i++)
+        {
+            if (combined[i] == '\n')
+            {
+                skipped++;
+                if (skipped >= linesToSkip)
+                {
+                    cutIndex = i + 1;
+                    break;
+                }
+            }
+        }
+
+        return cutIndex < combined.Length ? combined[cutIndex..] : combined;
+    }
+
+    private static string TrimToMaxCharacters(string? value, int maxCharacters)
+    {
+        var text = value ?? string.Empty;
+        if (text.Length <= maxCharacters)
+        {
+            return text;
+        }
+
+        return text[^maxCharacters..];
     }
 }

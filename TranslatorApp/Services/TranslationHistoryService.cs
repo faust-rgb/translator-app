@@ -7,6 +7,7 @@ namespace TranslatorApp.Services;
 public sealed class TranslationHistoryService : ITranslationHistoryService
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    private static readonly SemaphoreSlim FileLock = new(1, 1);
     private readonly string _path = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "TranslatorApp",
@@ -14,36 +15,70 @@ public sealed class TranslationHistoryService : ITranslationHistoryService
 
     public async Task<IReadOnlyList<TranslationHistoryRecord>> LoadAsync()
     {
+        await FileLock.WaitAsync();
+        try
+        {
+            return await LoadUnsafeAsync();
+        }
+        finally
+        {
+            FileLock.Release();
+        }
+    }
+
+    public async Task AddAsync(TranslationHistoryRecord record)
+    {
+        await FileLock.WaitAsync();
+        try
+        {
+            var items = (await LoadUnsafeAsync()).ToList();
+            items.Insert(0, record);
+            if (items.Count > 200)
+            {
+                items = items.Take(200).ToList();
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+            var json = JsonSerializer.Serialize(items, JsonOptions);
+            await File.WriteAllTextAsync(_path, json);
+        }
+        finally
+        {
+            FileLock.Release();
+        }
+    }
+
+    public async Task ClearAsync()
+    {
+        await FileLock.WaitAsync();
+        try
+        {
+            if (File.Exists(_path))
+            {
+                File.Delete(_path);
+            }
+        }
+        finally
+        {
+            FileLock.Release();
+        }
+    }
+
+    private async Task<IReadOnlyList<TranslationHistoryRecord>> LoadUnsafeAsync()
+    {
         if (!File.Exists(_path))
         {
             return Array.Empty<TranslationHistoryRecord>();
         }
 
-        var json = await File.ReadAllTextAsync(_path);
-        return JsonSerializer.Deserialize<List<TranslationHistoryRecord>>(json, JsonOptions) ?? [];
-    }
-
-    public async Task AddAsync(TranslationHistoryRecord record)
-    {
-        var items = (await LoadAsync()).ToList();
-        items.Insert(0, record);
-        if (items.Count > 200)
+        try
         {
-            items = items.Take(200).ToList();
+            var json = await File.ReadAllTextAsync(_path);
+            return JsonSerializer.Deserialize<List<TranslationHistoryRecord>>(json, JsonOptions) ?? [];
         }
-
-        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-        var json = JsonSerializer.Serialize(items, JsonOptions);
-        await File.WriteAllTextAsync(_path, json);
-    }
-
-    public Task ClearAsync()
-    {
-        if (File.Exists(_path))
+        catch (JsonException)
         {
-            File.Delete(_path);
+            return Array.Empty<TranslationHistoryRecord>();
         }
-
-        return Task.CompletedTask;
     }
 }

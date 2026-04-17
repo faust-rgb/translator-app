@@ -6,9 +6,9 @@ public sealed class AppLogService : IAppLogService
 {
     public event EventHandler<string>? LogAdded;
 
-    public void Info(string message) => Publish($"[{DateTime.Now:HH:mm:ss}] INFO  {message}");
+    public void Info(string message) => Publish($"[{FormatTimestamp()}] INFO  {message}");
 
-    public void Error(string message) => Publish($"[{DateTime.Now:HH:mm:ss}] ERROR {message}");
+    public void Error(string message) => Publish($"[{FormatTimestamp()}] ERROR {message}");
 
     private void Publish(string message)
     {
@@ -20,4 +20,6 @@ public sealed class AppLogService : IAppLogService
 
         Application.Current?.Dispatcher.Invoke(() => LogAdded?.Invoke(this, message));
     }
+
+    private static string FormatTimestamp() => DateTimeOffset.UtcNow.ToString("yyyy-MM-dd HH:mm:ss 'UTC'");
 }

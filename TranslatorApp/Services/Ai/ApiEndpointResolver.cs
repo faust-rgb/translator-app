@@ -4,6 +4,7 @@ public static class ApiEndpointResolver
 {
     public static Uri ResolveAnthropicMessagesUri(string baseUrl)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(baseUrl);
         var trimmed = baseUrl.Trim().TrimEnd('/');
         if (trimmed.EndsWith("/v1/messages", StringComparison.OrdinalIgnoreCase))
         {
@@ -23,6 +24,7 @@ public static class ApiEndpointResolver
 
     public static IReadOnlyList<Uri> ResolveOpenAiChatCompletionsUris(string baseUrl)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(baseUrl);
         var trimmed = baseUrl.Trim().TrimEnd('/');
         if (trimmed.EndsWith("/v1/chat/completions", StringComparison.OrdinalIgnoreCase) ||
             trimmed.EndsWith("/v2/chat/completions", StringComparison.OrdinalIgnoreCase) ||

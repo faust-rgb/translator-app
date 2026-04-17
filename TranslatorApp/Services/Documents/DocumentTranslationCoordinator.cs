@@ -40,7 +40,7 @@ public sealed class DocumentTranslationCoordinator(
 
     private async Task TranslateSingleAsync(DocumentTranslationItem item, AppSettings settings, CancellationToken cancellationToken)
     {
-        var startedAt = DateTime.Now;
+        var startedAt = DateTime.UtcNow;
         var checkpoint = await recoveryStateService.GetCheckpointAsync(item.SourcePath);
         var extension = Path.GetExtension(item.SourcePath).ToLowerInvariant();
         var translator = translators.FirstOrDefault(x => x.CanHandle(extension));
@@ -60,10 +60,18 @@ public sealed class DocumentTranslationCoordinator(
         await UpdateItemAsync(item, () =>
         {
             item.Status = DocumentStatus.Running;
-            item.Progress = 0;
-            item.ProgressText = "准备开始";
+            item.Progress = checkpoint?.Progress ?? 0;
+            item.ProgressText = checkpoint?.UnitIndex > 0
+                ? $"从单元 {checkpoint.UnitIndex} 继续: {checkpoint.ProgressText}"
+                : "准备开始";
             item.ErrorMessage = null;
         });
+
+        if (checkpoint?.UnitIndex > 0)
+        {
+            logService.Info($"{Path.GetFileName(item.SourcePath)} 从检查点继续：单元 {checkpoint.UnitIndex}，进度 {checkpoint.Progress}%");
+        }
+
         await recoveryStateService.SaveCheckpointAsync(new DocumentCheckpoint
         {
             SourcePath = item.SourcePath,
@@ -75,7 +83,7 @@ public sealed class DocumentTranslationCoordinator(
             UnitIndex = checkpoint?.UnitIndex ?? 0,
             SubUnitIndex = checkpoint?.SubUnitIndex ?? 0,
             ErrorMessage = null,
-            UpdatedAt = DateTime.Now
+            UpdatedAt = DateTime.UtcNow
         });
 
         try
@@ -105,7 +113,7 @@ public sealed class DocumentTranslationCoordinator(
                     UnitIndex = unitIndex,
                     SubUnitIndex = subUnitIndex,
                     ErrorMessage = item.ErrorMessage,
-                    UpdatedAt = DateTime.Now
+                    UpdatedAt = DateTime.UtcNow
                 })
             };
 
@@ -140,7 +148,7 @@ public sealed class DocumentTranslationCoordinator(
                 UnitIndex = checkpoint?.UnitIndex ?? 0,
                 SubUnitIndex = checkpoint?.SubUnitIndex ?? 0,
                 ErrorMessage = item.ErrorMessage,
-                UpdatedAt = DateTime.Now
+                UpdatedAt = DateTime.UtcNow
             });
         }
         catch (Exception ex)
@@ -151,7 +159,7 @@ public sealed class DocumentTranslationCoordinator(
                 item.ErrorMessage = ex.Message;
                 item.ProgressText = "失败";
             });
-            logService.Error($"{Path.GetFileName(item.SourcePath)} 翻译失败：{ex.Message}");
+            logService.Error($"{Path.GetFileName(item.SourcePath)} 翻译失败：{ex}");
             await WriteHistoryAsync(item, settings, startedAt);
             await recoveryStateService.SaveCheckpointAsync(new DocumentCheckpoint
             {
@@ -164,7 +172,7 @@ public sealed class DocumentTranslationCoordinator(
                 UnitIndex = checkpoint?.UnitIndex ?? 0,
                 SubUnitIndex = checkpoint?.SubUnitIndex ?? 0,
                 ErrorMessage = item.ErrorMessage,
-                UpdatedAt = DateTime.Now
+                UpdatedAt = DateTime.UtcNow
             });
         }
     }
@@ -179,7 +187,7 @@ public sealed class DocumentTranslationCoordinator(
             Model = settings.Ai.Model,
             Status = item.Status.ToString(),
             Progress = item.Progress,
-            DurationSeconds = Math.Round((DateTime.Now - startedAt).TotalSeconds, 2),
+            DurationSeconds = Math.Round((DateTime.UtcNow - startedAt).TotalSeconds, 2),
             ErrorMessage = item.ErrorMessage
         });
 
