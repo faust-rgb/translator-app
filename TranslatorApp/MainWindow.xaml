@@ -6,9 +6,9 @@
         xmlns:converters="clr-namespace:TranslatorApp.Converters"
         mc:Ignorable="d"
         Title="AI 文档翻译器"
-        Height="860"
+        Height="760"
         Width="1420"
-        MinHeight="720"
+        MinHeight="680"
         MinWidth="1120"
         Icon="Assets/app-icon.png"
         Loaded="Window_Loaded">
@@ -21,6 +21,39 @@
             <Setter Property="Margin" Value="0,0,6,6" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
             <Setter Property="HorizontalContentAlignment" Value="Center" />
+        </Style>
+        <Style x:Key="ToolbarButtonStyle" TargetType="Button" BasedOn="{StaticResource CompactButtonStyle}">
+            <Setter Property="Height" Value="32" />
+            <Setter Property="MinWidth" Value="116" />
+            <Setter Property="Padding" Value="10,2" />
+            <Setter Property="Margin" Value="0,0,8,6" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Background" Value="#FFF5F2EA" />
+            <Setter Property="BorderBrush" Value="#FFD4C5A2" />
+            <Setter Property="BorderThickness" Value="1" />
+        </Style>
+        <Style x:Key="PrimaryToolbarButtonStyle" TargetType="Button" BasedOn="{StaticResource ToolbarButtonStyle}">
+            <Setter Property="Background" Value="#FFC97A1A" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="#FFAA6310" />
+            <Setter Property="FontWeight" Value="Bold" />
+        </Style>
+        <Style x:Key="DangerToolbarButtonStyle" TargetType="Button" BasedOn="{StaticResource ToolbarButtonStyle}">
+            <Setter Property="Background" Value="#FFF8E9E5" />
+            <Setter Property="Foreground" Value="#FF8C3A22" />
+            <Setter Property="BorderBrush" Value="#FFD9A595" />
+        </Style>
+        <Style x:Key="ToolbarIconStyle" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="Margin" Value="0,0,5,0" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style x:Key="CompactSectionHeaderStyle" TargetType="TextBlock" BasedOn="{StaticResource SectionLabelStyle}">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Margin" Value="0,0,0,6" />
+            <Setter Property="Foreground" Value="#FF6C6454" />
         </Style>
         <Style x:Key="CompactTextBoxStyle" TargetType="TextBox">
             <Setter Property="Height" Value="28" />
@@ -88,81 +121,132 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="1" Margin="0,8,0,8" Padding="8" Background="#FFF8F8F8" CornerRadius="10">
+        <Border Grid.Row="1" Margin="0,8,0,8" Padding="8,6" Background="#FFF8F8F8" CornerRadius="10">
             <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="1.55*" />
-                    <ColumnDefinition Width="0.95*" />
-                    <ColumnDefinition Width="0.85*" />
-                    <ColumnDefinition Width="0.9*" />
-                    <ColumnDefinition Width="1.0*" />
-                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
 
-                <StackPanel Margin="0,0,8,0">
-                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="源语言" />
-                    <ComboBox Style="{StaticResource CompactComboBoxStyle}"
-                              Margin="0,0,0,6"
+                <Grid Margin="0,0,0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="210" />
+                        <ColumnDefinition Width="14" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="210" />
+                        <ColumnDefinition Width="14" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="180" />
+                        <ColumnDefinition Width="14" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="100" />
+                        <ColumnDefinition Width="14" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="10" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Column="0" VerticalAlignment="Center" Style="{StaticResource SectionLabelStyle}" Text="源语言" />
+                    <ComboBox Grid.Column="1"
+                              Style="{StaticResource CompactComboBoxStyle}"
                               IsEditable="True"
                               ItemsSource="{Binding CommonLanguages}"
                               Text="{Binding SourceLanguage, UpdateSourceTrigger=PropertyChanged}" />
-                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="目标语言" />
-                    <ComboBox Style="{StaticResource CompactComboBoxStyle}"
-                              Margin="0,0,0,6"
+
+                    <TextBlock Grid.Column="3" VerticalAlignment="Center" Style="{StaticResource SectionLabelStyle}" Text="目标语言" />
+                    <ComboBox Grid.Column="4"
+                              Style="{StaticResource CompactComboBoxStyle}"
                               IsEditable="True"
                               ItemsSource="{Binding CommonLanguages}"
                               Text="{Binding TargetLanguage, UpdateSourceTrigger=PropertyChanged}" />
-                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="操作" />
-                    <WrapPanel Margin="0,2,0,0" ItemHeight="30" ItemWidth="92">
-                        <Button Style="{StaticResource CompactButtonStyle}" Command="{Binding AddFilesCommand}" Content="添加文档" />
-                        <Button Style="{StaticResource CompactButtonStyle}" Command="{Binding ClearFilesCommand}" Content="清空列表" />
-                        <Button Style="{StaticResource CompactButtonStyle}" Command="{Binding SaveSettingsCommand}" Content="保存配置" />
-                        <Button Style="{StaticResource CompactButtonStyle}" Command="{Binding StartCommand}" Content="开始翻译" />
-                        <Button Style="{StaticResource CompactButtonStyle}" Command="{Binding PauseOrResumeCommand}" Content="{Binding PauseButtonText}" />
-                        <Button Style="{StaticResource CompactButtonStyle}" Command="{Binding StopCommand}" Content="停止任务" />
-                        <Button Style="{StaticResource CompactButtonStyle}" Command="{Binding OpenOutputDocumentCommand}" CommandParameter="{Binding SelectedDocument}" Content="打开译后文档" />
-                    </WrapPanel>
-                </StackPanel>
 
-                <StackPanel Grid.Column="1" Margin="0,0,8,0">
-                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="输出字体" />
-                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding OutputFontFamily, UpdateSourceTrigger=PropertyChanged}" />
-                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="输出字号" />
-                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding OutputFontSize, UpdateSourceTrigger=PropertyChanged}" />
-                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="输出目录" />
-                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding OutputDirectory, UpdateSourceTrigger=PropertyChanged}" />
-                    <Button Style="{StaticResource CompactButtonStyle}" Margin="0,0,0,0" Command="{Binding PickOutputDirectoryCommand}" Content="选择输出目录" />
-                </StackPanel>
+                    <TextBlock Grid.Column="6" VerticalAlignment="Center" Style="{StaticResource SectionLabelStyle}" Text="输出字体" />
+                    <TextBox Grid.Column="7"
+                             Style="{StaticResource CompactTextBoxStyle}"
+                             Text="{Binding OutputFontFamily, UpdateSourceTrigger=PropertyChanged}" />
 
-                <StackPanel Grid.Column="2" Margin="0,0,8,0">
-                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="术语表文件" />
-                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding GlossaryPath, UpdateSourceTrigger=PropertyChanged}" />
-                    <Button Style="{StaticResource CompactButtonStyle}" Margin="0,0,0,6" Command="{Binding PickGlossaryFileCommand}" Content="选择术语表" />
-                    <CheckBox Margin="0,0,0,6" IsChecked="{Binding EnableStreaming}" Content="启用流式预览" />
-                    <CheckBox Margin="0,0,0,6" IsChecked="{Binding ExportBilingualDocument}" Content="导出双语 DOCX" />
-                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="失败重试次数" />
-                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Text="{Binding RetryCount, UpdateSourceTrigger=PropertyChanged}" />
-                </StackPanel>
+                    <TextBlock Grid.Column="9" VerticalAlignment="Center" Style="{StaticResource SectionLabelStyle}" Text="输出字号" />
+                    <TextBox Grid.Column="10"
+                             Style="{StaticResource CompactTextBoxStyle}"
+                             Text="{Binding OutputFontSize, UpdateSourceTrigger=PropertyChanged}" />
 
-                <StackPanel Grid.Column="3" Margin="0,0,8,0">
-                    <CheckBox Margin="0,0,0,6" IsChecked="{Binding EnableOcrForScannedPdf}" Content="扫描 PDF 启用 OCR" />
-                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="OCR 语言" />
-                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding OcrLanguage, UpdateSourceTrigger=PropertyChanged}" />
-                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="tessdata 目录" />
-                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding TesseractDataPath, UpdateSourceTrigger=PropertyChanged}" />
-                    <Button Style="{StaticResource CompactButtonStyle}" Margin="0,0,0,0" Command="{Binding PickTesseractDataDirectoryCommand}" Content="选择 tessdata" />
-                </StackPanel>
+                    <TextBlock Grid.Column="12" VerticalAlignment="Center" Style="{StaticResource SectionLabelStyle}" Text="输出目录" />
+                    <TextBox Grid.Column="13"
+                             Style="{StaticResource CompactTextBoxStyle}"
+                             Text="{Binding OutputDirectory, UpdateSourceTrigger=PropertyChanged}" />
+                    <Button Grid.Column="15"
+                            Style="{StaticResource CompactButtonStyle}"
+                            Margin="0,0,0,0"
+                            Command="{Binding PickOutputDirectoryCommand}"
+                            Content="选择目录" />
+                </Grid>
 
-                <StackPanel Grid.Column="4">
-                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="文档级并发" />
-                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding MaxParallelDocuments, UpdateSourceTrigger=PropertyChanged}" />
-                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="块级并发" />
-                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding MaxParallelBlocks, UpdateSourceTrigger=PropertyChanged}" />
-                    <TextBlock Style="{StaticResource SectionLabelStyle}" Text="全局请求并发" />
-                    <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding MaxGlobalTranslationRequests, UpdateSourceTrigger=PropertyChanged}" />
-                    <TextBlock Foreground="#FF666666"
-                               TextWrapping="Wrap"
-                               Text="安全模式建议：块级并发 1，全局请求并发 1。即使同时处理多个文档，也会统一节流远端请求。" />
-                </StackPanel>
+                <Border Grid.Row="1"
+                        Padding="10,6"
+                        Background="#FFFBF7EF"
+                        BorderBrush="#FFE7D8B3"
+                        BorderThickness="1"
+                        CornerRadius="8">
+                    <DockPanel LastChildFill="True">
+                        <TextBlock DockPanel.Dock="Top"
+                                   Margin="0,0,0,6"
+                                   FontSize="15"
+                                   FontWeight="SemiBold"
+                                   Text="操作" />
+                        <WrapPanel>
+                            <Button Style="{StaticResource PrimaryToolbarButtonStyle}" Command="{Binding StartCommand}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Style="{StaticResource ToolbarIconStyle}" Text="&#xE768;" />
+                                    <TextBlock VerticalAlignment="Center" Text="开始翻译" />
+                                </StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource ToolbarButtonStyle}" Command="{Binding PauseOrResumeCommand}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Style="{StaticResource ToolbarIconStyle}" Text="&#xE769;" />
+                                    <TextBlock VerticalAlignment="Center" Text="{Binding PauseButtonText}" />
+                                </StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource DangerToolbarButtonStyle}" Command="{Binding StopCommand}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Style="{StaticResource ToolbarIconStyle}" Text="&#xE71A;" />
+                                    <TextBlock VerticalAlignment="Center" Text="停止任务" />
+                                </StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource ToolbarButtonStyle}" Command="{Binding AddFilesCommand}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Style="{StaticResource ToolbarIconStyle}" Text="&#xE8B7;" />
+                                    <TextBlock VerticalAlignment="Center" Text="添加文档" />
+                                </StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource ToolbarButtonStyle}" Command="{Binding ClearFilesCommand}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Style="{StaticResource ToolbarIconStyle}" Text="&#xE74D;" />
+                                    <TextBlock VerticalAlignment="Center" Text="清空列表" />
+                                </StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource ToolbarButtonStyle}" Command="{Binding SaveSettingsCommand}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Style="{StaticResource ToolbarIconStyle}" Text="&#xE74E;" />
+                                    <TextBlock VerticalAlignment="Center" Text="保存配置" />
+                                </StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource ToolbarButtonStyle}" Command="{Binding OpenOutputDocumentCommand}" CommandParameter="{Binding SelectedDocument}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Style="{StaticResource ToolbarIconStyle}" Text="&#xE8A5;" />
+                                    <TextBlock VerticalAlignment="Center" Text="打开译后文档" />
+                                </StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource ToolbarButtonStyle}" Click="OpenTranslationSettingsButton_Click">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Style="{StaticResource ToolbarIconStyle}" Text="&#xE713;" />
+                                    <TextBlock VerticalAlignment="Center" Text="翻译设置" />
+                                </StackPanel>
+                            </Button>
+                        </WrapPanel>
+                    </DockPanel>
+                </Border>
             </Grid>
         </Border>
 

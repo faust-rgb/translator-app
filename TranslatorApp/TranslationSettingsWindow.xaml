@@ -1,0 +1,91 @@
+<Window x:Class="TranslatorApp.TranslationSettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="翻译设置"
+        Width="1040"
+        Height="430"
+        MinWidth="900"
+        MinHeight="360"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResize">
+    <Window.Resources>
+        <Style x:Key="CompactButtonStyle" TargetType="Button">
+            <Setter Property="Height" Value="30" />
+            <Setter Property="MinWidth" Value="108" />
+            <Setter Property="Padding" Value="10,2" />
+            <Setter Property="Margin" Value="0,0,6,6" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+        </Style>
+        <Style x:Key="CompactTextBoxStyle" TargetType="TextBox">
+            <Setter Property="Height" Value="28" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+        <Style x:Key="SectionLabelStyle" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,0,0,2" />
+        </Style>
+    </Window.Resources>
+
+    <DockPanel Margin="12">
+        <StackPanel DockPanel.Dock="Bottom"
+                    Margin="0,12,0,0"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right">
+            <Button Style="{StaticResource CompactButtonStyle}"
+                    Margin="0,0,0,0"
+                    IsDefault="True"
+                    Click="CloseButton_Click"
+                    Content="完成" />
+        </StackPanel>
+
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="1.05*" />
+                <ColumnDefinition Width="1.1*" />
+                <ColumnDefinition Width="0.95*" />
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Margin="0,0,12,0">
+                <TextBlock Style="{StaticResource SectionLabelStyle}" Text="术语表文件" />
+                <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding GlossaryPath, UpdateSourceTrigger=PropertyChanged}" />
+                <Button Style="{StaticResource CompactButtonStyle}" Margin="0,0,0,6" Command="{Binding PickGlossaryFileCommand}" Content="选择术语表" />
+                <CheckBox Margin="0,0,0,6" IsChecked="{Binding EnableStreaming}" Content="启用流式预览" />
+                <CheckBox Margin="0,0,0,6" IsChecked="{Binding ExportBilingualDocument}" Content="导出双语 DOCX" />
+                <TextBlock Style="{StaticResource SectionLabelStyle}" Text="失败重试次数" />
+                <TextBox Style="{StaticResource CompactTextBoxStyle}" Text="{Binding RetryCount, UpdateSourceTrigger=PropertyChanged}" />
+            </StackPanel>
+
+            <StackPanel Grid.Column="1" Margin="0,0,12,0">
+                <CheckBox Margin="0,0,0,6" IsChecked="{Binding EnableOcrForScannedPdf}" Content="扫描 PDF 启用 OCR" />
+                <TextBlock Style="{StaticResource SectionLabelStyle}" Text="OCR 语言" />
+                <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding OcrLanguage, UpdateSourceTrigger=PropertyChanged}" />
+                <TextBlock Style="{StaticResource SectionLabelStyle}" Text="tessdata 目录" />
+                <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding TesseractDataPath, UpdateSourceTrigger=PropertyChanged}" />
+                <Button Style="{StaticResource CompactButtonStyle}" Margin="0,0,0,0" Command="{Binding PickTesseractDataDirectoryCommand}" Content="选择 tessdata" />
+            </StackPanel>
+
+            <StackPanel Grid.Column="2">
+                <TextBlock Style="{StaticResource SectionLabelStyle}" Text="文档级并发" />
+                <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding MaxParallelDocuments, UpdateSourceTrigger=PropertyChanged}" />
+                <TextBlock Style="{StaticResource SectionLabelStyle}" Text="块级并发" />
+                <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding MaxParallelBlocks, UpdateSourceTrigger=PropertyChanged}" />
+                <TextBlock Style="{StaticResource SectionLabelStyle}" Text="全局请求并发" />
+                <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding MaxGlobalTranslationRequests, UpdateSourceTrigger=PropertyChanged}" />
+                <Border Margin="0,8,0,0"
+                        Padding="10"
+                        Background="#FFF8F8F8"
+                        BorderBrush="#FFE0E0E0"
+                        BorderThickness="1"
+                        CornerRadius="6">
+                    <TextBlock Foreground="#FF666666"
+                               TextWrapping="Wrap"
+                               Text="安全模式建议：块级并发 1，全局请求并发 1。即使同时处理多个文档，也会统一节流远端请求。" />
+                </Border>
+            </StackPanel>
+        </Grid>
+    </DockPanel>
+</Window>

@@ -79,4 +79,15 @@ public partial class MainWindow : Window
             viewModel.OpenOutputDocumentCommand.Execute(item);
         }
     }
+
+    private void OpenTranslationSettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new TranslationSettingsWindow
+        {
+            Owner = this,
+            DataContext = DataContext
+        };
+
+        dialog.ShowDialog();
+    }
 }
