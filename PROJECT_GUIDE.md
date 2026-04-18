@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`TranslatorApp` is a local Windows desktop translator for Office and PDF documents.  
+`TranslatorApp` is a local Windows desktop translator for Office, PDF, and ebook documents.  
 The app keeps document processing local and only sends extracted text to an AI model endpoint.
 
 ## Tech Stack
@@ -15,11 +15,12 @@ The app keeps document processing local and only sends extracted text to an AI m
 - `Docnet.Core`
 - `Tesseract`
 - `CommunityToolkit.Mvvm`
+- `WIC / BitmapDecoder` for ebook image sizing during DOCX export
 
 ## Main Structure
 
 - `TranslatorApp/ViewModels/MainViewModel.cs`
-  Main UI state, commands, startup restore, history refresh, connection test.
+  Main UI state, commands, startup restore, history refresh, connection test, translation range settings.
 - `TranslatorApp/MainWindow.xaml`
   Main desktop layout.
 - `TranslatorApp/Services/Ai`
@@ -27,7 +28,11 @@ The app keeps document processing local and only sends extracted text to an AI m
 - `TranslatorApp/Services/TranslationRequestThrottle.cs`
   Global remote translation request throttling.
 - `TranslatorApp/Services/Documents`
-  Translators for `docx/xlsx/pptx/pdf`.
+  Translators for `docx/xlsx/pptx/pdf/epub/mobi/azw3`.
+- `TranslatorApp/Services/Documents/EbookDocumentTranslator.cs`
+  Native EPUB translation pipeline, TOC synchronization, cover/metadata extraction, partial chapter-range support.
+- `TranslatorApp/Services/Documents/EbookDocxExportService.cs`
+  Native EPUB-to-DOCX export with cover page, metadata page, TOC field, images, figures, captions, and common inline/block style mapping.
 - `TranslatorApp/Services/OcrService.cs`
   OCR fallback for scanned PDFs.
 - `tools/PdfBilingualInspector`
@@ -43,6 +48,12 @@ The app keeps document processing local and only sends extracted text to an AI m
 
 - User config is intentionally simplified for third-party compatible endpoints.
 - Documents run sequentially by default.
+- Translation range is configurable:
+  - PDF uses source pages
+  - PowerPoint uses source slides
+  - Excel uses source worksheets
+  - EPUB/MOBI/AZW3 use chapter/content-document ranges
+  - Word uses approximate source-page ranges based on page-break anchors
 - Safe remote-request mode is enabled by default:
   - document parallelism = 1
   - block parallelism = 1
@@ -85,4 +96,18 @@ dotnet run --project .\TranslatorApp\TranslatorApp.csproj
   - wraps translated text character-by-character for Chinese output
 - PDF retry logic now does an extra pass for risky English fragments that come back untranslated, and creates a fresh AI client for each retry attempt.
 - Word translation no longer redistributes translated text at raw run granularity; it groups adjacent runs with identical formatting first to preserve formatting boundaries more safely.
+- Ebook support now follows this model:
+  - native EPUB translation edits XHTML/TOC locally
+  - EPUB output is native
+  - DOCX output is native and keeps book structure as closely as practical
+  - MOBI/AZW3 are imported through `ebook-convert.exe` into EPUB first
+- EPUB TOC synchronization now prefers translated body headings so navigation labels stay aligned with chapter titles.
+- DOCX ebook export now includes:
+  - cover page from EPUB cover image and cover-document text
+  - metadata/info page from EPUB metadata
+  - update-on-open TOC field
+  - image embedding with real pixel-size detection when possible
+  - `figure + figcaption` grouped export
+  - SVG passthrough via OpenXML image-part support
+- If only part of an EPUB is translated, TOC synchronization is limited to translated chapters to avoid mixing rewritten and untouched navigation labels.
 - If `publish` fails with access denied, the existing `publish\TranslatorApp.exe` is usually still running.

@@ -53,6 +53,23 @@
                 <TextBlock Style="{StaticResource SectionLabelStyle}" Text="术语表文件" />
                 <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding GlossaryPath, UpdateSourceTrigger=PropertyChanged}" />
                 <Button Style="{StaticResource CompactButtonStyle}" Margin="0,0,0,6" Command="{Binding PickGlossaryFileCommand}" Content="选择术语表" />
+                <TextBlock Style="{StaticResource SectionLabelStyle}" Text="翻译范围起始" />
+                <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding RangeStart, UpdateSourceTrigger=PropertyChanged}" />
+                <TextBlock Style="{StaticResource SectionLabelStyle}" Text="翻译范围结束" />
+                <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding RangeEnd, UpdateSourceTrigger=PropertyChanged}" />
+                <TextBlock Margin="0,0,0,8"
+                           Foreground="#FF666666"
+                           TextWrapping="Wrap"
+                           Text="{Binding TranslationRangeHint}" />
+                <TextBlock Margin="0,0,0,8"
+                           Foreground="#FF666666"
+                           TextWrapping="Wrap"
+                           Text="结束值填 0 表示直到文档末尾。" />
+                <TextBlock Style="{StaticResource SectionLabelStyle}" Text="电子书输出格式" />
+                <ComboBox Margin="0,0,0,6"
+                          Height="28"
+                          ItemsSource="{Binding EbookOutputFormats}"
+                          Text="{Binding EbookOutputFormat, UpdateSourceTrigger=PropertyChanged}" />
                 <CheckBox Margin="0,0,0,6" IsChecked="{Binding EnableStreaming}" Content="启用流式预览" />
                 <CheckBox Margin="0,0,0,6" IsChecked="{Binding ExportBilingualDocument}" Content="导出双语 DOCX" />
                 <TextBlock Style="{StaticResource SectionLabelStyle}" Text="失败重试次数" />
@@ -60,6 +77,13 @@
             </StackPanel>
 
             <StackPanel Grid.Column="1" Margin="0,0,12,0">
+                <TextBlock Style="{StaticResource SectionLabelStyle}" Text="MOBI/AZW3 导入转换器" />
+                <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding CalibreExecutablePath, UpdateSourceTrigger=PropertyChanged}" />
+                <Button Style="{StaticResource CompactButtonStyle}" Margin="0,0,0,6" Command="{Binding PickCalibreExecutableCommand}" Content="选择 ebook-convert.exe" />
+                <TextBlock Margin="0,0,0,8"
+                           Foreground="#FF666666"
+                           TextWrapping="Wrap"
+                           Text="仅在导入 MOBI / AZW3 时需要；原生 EPUB 翻译与 EPUB / DOCX 输出不依赖此工具。" />
                 <CheckBox Margin="0,0,0,6" IsChecked="{Binding EnableOcrForScannedPdf}" Content="扫描 PDF 启用 OCR" />
                 <TextBlock Style="{StaticResource SectionLabelStyle}" Text="OCR 语言" />
                 <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding OcrLanguage, UpdateSourceTrigger=PropertyChanged}" />

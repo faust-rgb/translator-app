@@ -34,6 +34,7 @@ public sealed class PdfDocumentTranslator(
         using var outputPdf = new PdfSharp.Pdf.PdfDocument();
         var bilingualSegments = new List<BilingualSegment>();
         var preparedPages = new List<PreparedPdfPage>(inputPdf.PageCount);
+        var requestedRange = GetRequestedRange(context.Settings, inputPdf.PageCount);
 
         for (var pageIndex = 0; pageIndex < inputPdf.PageCount; pageIndex++)
         {
@@ -69,6 +70,11 @@ public sealed class PdfDocumentTranslator(
             context.CancellationToken.ThrowIfCancellationRequested();
 
             var importedPage = outputPdf.AddPage(inputPdf.Pages[pageIndex]);
+            if (!IsWithinRequestedRange(pageIndex + 1, requestedRange))
+            {
+                continue;
+            }
+
             var blocks = preparedPages[pageIndex].Blocks;
             using var graphics = XGraphics.FromPdfPage(importedPage, XGraphicsPdfPageOptions.Append);
             var translatableBlocks = blocks
@@ -124,9 +130,11 @@ public sealed class PdfDocumentTranslator(
                 }
             }
 
-            var progress = (int)Math.Round((pageIndex + 1) * 100d / Math.Max(1, inputPdf.PageCount));
-            await context.ReportProgressAsync(progress, $"PDF 页面 {pageIndex + 1}/{inputPdf.PageCount}，文本块 {blocks.Count}");
-            await context.SaveCheckpointAsync(pageIndex + 1, 0, $"PDF 页面 {pageIndex + 1}/{inputPdf.PageCount}");
+            var rangeLength = requestedRange.End - requestedRange.Start + 1;
+            var completedInRange = pageIndex - requestedRange.Start + 2;
+            var progress = (int)Math.Round(completedInRange * 100d / Math.Max(1, rangeLength));
+            await context.ReportProgressAsync(progress, $"PDF 页面 {pageIndex + 1}/{inputPdf.PageCount}（范围 {requestedRange.Start}-{requestedRange.End}），文本块 {blocks.Count}");
+            await context.SaveCheckpointAsync(completedInRange, 0, $"PDF 页面 {pageIndex + 1}/{inputPdf.PageCount}");
         }
 
         outputPdf.Save(outputPath);

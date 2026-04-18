@@ -27,17 +27,29 @@ public sealed class WordDocumentTranslator(
 
         using var document = WordprocessingDocument.Open(outputPath, true);
         var bilingualSegments = new List<BilingualSegment>();
+        var mainDocument = document.MainDocumentPart?.Document ?? throw new InvalidOperationException("Word 文件无效。");
+        var mainParagraphs = mainDocument.Body?.Descendants<Paragraph>().ToList() ?? [];
+        var pageInfos = BuildWordPageInfos(mainParagraphs);
+        var totalPages = Math.Max(1, pageInfos.LastOrDefault()?.PageNumber ?? 1);
+        var requestedRange = GetRequestedRange(context.Settings, totalPages);
+        var paragraphs = pageInfos
+            .Where(x => IsWithinRequestedRange(x.PageNumber, requestedRange))
+            .Select(x => x.Paragraph)
+            .ToList();
 
-        var parts = new OpenXmlPartRootElement?[]
+        var translateHeadersAndFooters = requestedRange.Start == 1 && requestedRange.End >= totalPages;
+        var parts = new List<OpenXmlPartRootElement> { mainDocument };
+        if (translateHeadersAndFooters)
         {
-            document.MainDocumentPart?.Document,
+            parts.AddRange(document.MainDocumentPart?.HeaderParts.Select(x => x.Header).OfType<Header>() ?? []);
+            parts.AddRange(document.MainDocumentPart?.FooterParts.Select(x => x.Footer).OfType<Footer>() ?? []);
+            paragraphs.AddRange(parts.Skip(1).SelectMany(x => x.Descendants<Paragraph>()));
         }
-        .Concat(document.MainDocumentPart?.HeaderParts.Select(x => x.Header) ?? Array.Empty<Header?>())
-        .Concat(document.MainDocumentPart?.FooterParts.Select(x => x.Footer) ?? Array.Empty<Footer?>())
-        .OfType<OpenXmlPartRootElement>()
-        .ToList();
+        else if (document.MainDocumentPart?.HeaderParts.Any() == true || document.MainDocumentPart?.FooterParts.Any() == true)
+        {
+            Log($"Word 当前按近似分页范围 {requestedRange.Start}-{requestedRange.End} 处理，页眉页脚仅在全量范围时一并翻译。");
+        }
 
-        var paragraphs = parts.SelectMany(x => x.Descendants<Paragraph>()).ToList();
         var batchSize = GetBlockTranslationConcurrency(context.Settings);
         for (var batchStart = context.ResumeUnitIndex; batchStart < paragraphs.Count; batchStart += batchSize)
         {
@@ -84,7 +96,7 @@ public sealed class WordDocumentTranslator(
                 ApplyTranslationToParagraphRuns(paragraphInfo.Runs, translated);
 
                 var progress = (int)Math.Round((paragraphInfo.ParagraphIndex + 1) * 100d / Math.Max(1, paragraphs.Count));
-                await context.ReportProgressAsync(progress, $"Word 段落 {paragraphInfo.ParagraphIndex + 1}/{paragraphs.Count}");
+                await context.ReportProgressAsync(progress, $"Word 段落 {paragraphInfo.ParagraphIndex + 1}/{paragraphs.Count}（近似页范围 {requestedRange.Start}-{requestedRange.End}）");
                 await context.SaveCheckpointAsync(paragraphInfo.ParagraphIndex + 1, 0, $"Word 段落 {paragraphInfo.ParagraphIndex + 1}/{paragraphs.Count}");
             }
         }
@@ -153,6 +165,47 @@ public sealed class WordDocumentTranslator(
     {
         progressService.Publish(Path.GetFileName(sourcePath), partial);
         return Task.CompletedTask;
+    }
+
+    private static List<WordPageInfo> BuildWordPageInfos(IReadOnlyList<Paragraph> paragraphs)
+    {
+        var infos = new List<WordPageInfo>(paragraphs.Count);
+        var currentPage = 1;
+        foreach (var paragraph in paragraphs)
+        {
+            if (infos.Count > 0 && StartsNewPage(paragraph))
+            {
+                currentPage++;
+            }
+
+            infos.Add(new WordPageInfo(paragraph, currentPage));
+
+            var renderedBreaks = paragraph.Descendants<LastRenderedPageBreak>().Count();
+            var manualBreaks = paragraph
+                .Descendants<Break>()
+                .Count(x => x.Type?.Value == BreakValues.Page);
+            currentPage += Math.Max(renderedBreaks, 0) + Math.Max(manualBreaks, 0);
+        }
+
+        return infos;
+    }
+
+    private static bool StartsNewPage(Paragraph paragraph)
+    {
+        if (paragraph.ParagraphProperties?.PageBreakBefore is not null)
+        {
+            return true;
+        }
+
+        var sectionType = paragraph.ParagraphProperties?
+            .SectionProperties?
+            .GetFirstChild<SectionType>()?
+            .Val?
+            .Value;
+
+        return sectionType == SectionMarkValues.NextPage ||
+               sectionType == SectionMarkValues.OddPage ||
+               sectionType == SectionMarkValues.EvenPage;
     }
 
     private static WordRunInfo? CreateRunInfo(Run run)
@@ -237,4 +290,5 @@ public sealed class WordDocumentTranslator(
         public string Original { get; set; } = original;
     }
     private sealed record WordRunInfo(IReadOnlyList<Text> Texts, string Original, string FormatKey);
+    private sealed record WordPageInfo(Paragraph Paragraph, int PageNumber);
 }

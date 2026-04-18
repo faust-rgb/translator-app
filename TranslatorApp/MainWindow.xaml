@@ -92,7 +92,7 @@
                     <TextBlock Margin="0,2,0,0"
                                Foreground="#FF5F5A4E"
                                TextWrapping="Wrap"
-                               Text="支持 DOCX / XLSX / PPTX / PDF。只把文本送给大模型，文档处理在本地完成。兼容 Anthropic / OpenAI 风格接口。" />
+                               Text="支持 DOCX / XLSX / PPTX / PDF / EPUB / MOBI / AZW3。只把文本送给大模型，文档处理在本地完成。电子书会在保留结构后输出为 EPUB 或 DOCX。" />
                 </StackPanel>
 
                 <StackPanel Grid.Column="1" Margin="8,0,10,0">
@@ -146,6 +146,9 @@
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="10" />
                         <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="14" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="110" />
                     </Grid.ColumnDefinitions>
 
                     <TextBlock Grid.Column="0" VerticalAlignment="Center" Style="{StaticResource SectionLabelStyle}" Text="源语言" />
@@ -181,6 +184,12 @@
                             Margin="0,0,0,0"
                             Command="{Binding PickOutputDirectoryCommand}"
                             Content="选择目录" />
+
+                    <TextBlock Grid.Column="17" VerticalAlignment="Center" Style="{StaticResource SectionLabelStyle}" Text="电子书输出" />
+                    <ComboBox Grid.Column="18"
+                              Style="{StaticResource CompactComboBoxStyle}"
+                              ItemsSource="{Binding EbookOutputFormats}"
+                              Text="{Binding EbookOutputFormat, UpdateSourceTrigger=PropertyChanged}" />
                 </Grid>
 
                 <Border Grid.Row="1"

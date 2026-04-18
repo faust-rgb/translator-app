@@ -28,11 +28,21 @@ public sealed class PowerPointDocumentTranslator(
         using var presentation = PresentationDocument.Open(outputPath, true);
         var slideParts = presentation.PresentationPart?.SlideParts.ToList() ?? new List<SlidePart>();
         var bilingualSegments = new List<BilingualSegment>();
+        var requestedRange = GetRequestedRange(context.Settings, slideParts.Count);
+        var selectedSlideCount = Math.Max(0, requestedRange.End - requestedRange.Start + 1);
+        var processedSlides = 0;
 
         for (var slideIndex = 0; slideIndex < slideParts.Count; slideIndex++)
         {
-            if (slideIndex < context.ResumeUnitIndex)
+            var slideNumber = slideIndex + 1;
+            if (!IsWithinRequestedRange(slideNumber, requestedRange))
             {
+                continue;
+            }
+
+            if (processedSlides < context.ResumeUnitIndex)
+            {
+                processedSlides++;
                 continue;
             }
 
@@ -88,9 +98,10 @@ public sealed class PowerPointDocumentTranslator(
             }
 
             slide.Save();
-            var progress = (int)Math.Round((slideIndex + 1) * 100d / Math.Max(1, slideParts.Count));
-            await context.ReportProgressAsync(progress, $"PPT 幻灯片 {slideIndex + 1}/{slideParts.Count}");
-            await context.SaveCheckpointAsync(slideIndex + 1, 0, $"PPT 幻灯片 {slideIndex + 1}/{slideParts.Count}");
+            processedSlides++;
+            var progress = (int)Math.Round(processedSlides * 100d / Math.Max(1, selectedSlideCount));
+            await context.ReportProgressAsync(progress, $"PPT 幻灯片 {slideNumber}/{slideParts.Count}（范围 {requestedRange.Start}-{requestedRange.End}）");
+            await context.SaveCheckpointAsync(processedSlides, 0, $"PPT 幻灯片 {slideNumber}/{slideParts.Count}");
         }
 
         if (context.Settings.Translation.ExportBilingualDocument)

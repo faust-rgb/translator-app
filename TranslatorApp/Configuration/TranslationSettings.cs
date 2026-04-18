@@ -7,6 +7,10 @@ public sealed class TranslationSettings
     public string SourceLanguage { get; set; } = "自动检测";
     public string TargetLanguage { get; set; } = "中文";
     public string OutputDirectory { get; set; } = string.Empty;
+    public int RangeStart { get; set; } = 1;
+    public int RangeEnd { get; set; } = 0;
+    public string EbookOutputFormat { get; set; } = "EPUB";
+    public string CalibreExecutablePath { get; set; } = string.Empty;
     public string OutputFontFamily { get; set; } = PdfSharpFontResolver.DefaultFontFamily;
     public double OutputFontSize { get; set; } = 11;
     public int MaxParallelDocuments { get; set; } = 1;

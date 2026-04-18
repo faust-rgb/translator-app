@@ -101,10 +101,12 @@ public abstract class DocumentTranslatorBase(ITextTranslationService textTransla
         return results;
     }
 
-    protected static string BuildOutputPath(string sourcePath, string outputDirectory)
+    protected static string BuildOutputPath(string sourcePath, string outputDirectory, string? outputExtension = null)
     {
         var fileName = Path.GetFileNameWithoutExtension(sourcePath);
-        var extension = Path.GetExtension(sourcePath);
+        var extension = string.IsNullOrWhiteSpace(outputExtension)
+            ? Path.GetExtension(sourcePath)
+            : outputExtension;
         var directory = string.IsNullOrWhiteSpace(outputDirectory)
             ? Path.GetDirectoryName(sourcePath)!
             : outputDirectory;
@@ -117,6 +119,27 @@ public abstract class DocumentTranslatorBase(ITextTranslationService textTransla
 
     protected static int GetBlockTranslationConcurrency(AppSettings settings) =>
         Math.Max(1, settings.Translation.MaxParallelBlocks);
+
+    protected static (int Start, int End) GetRequestedRange(AppSettings settings, int totalUnits)
+    {
+        totalUnits = Math.Max(0, totalUnits);
+        if (totalUnits == 0)
+        {
+            return (1, 0);
+        }
+
+        var start = Math.Max(1, settings.Translation.RangeStart);
+        var end = settings.Translation.RangeEnd <= 0 ? totalUnits : Math.Max(start, settings.Translation.RangeEnd);
+        start = Math.Min(start, totalUnits);
+        end = Math.Min(end, totalUnits);
+        return (start, end);
+    }
+
+    protected static bool IsWithinRequestedRange(int oneBasedIndex, (int Start, int End) range) =>
+        range.End >= range.Start && oneBasedIndex >= range.Start && oneBasedIndex <= range.End;
+
+    protected static string DescribeRequestedRange(string unitName, (int Start, int End) range) =>
+        range.End < range.Start ? $"未命中任何{unitName}" : $"{unitName} {range.Start}-{range.End}";
 
     protected readonly record struct TranslationBlock(string Text, string ContextHint);
 }

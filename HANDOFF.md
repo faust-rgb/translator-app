@@ -3,7 +3,7 @@
 ## What Is Already Done
 
 - Local WPF app built from scratch in `e:\translator`
-- Multi-format translation for `docx/xlsx/pptx/pdf`
+- Multi-format translation for `docx/xlsx/pptx/pdf/epub/mobi/azw3`
 - OCR fallback for scanned PDFs
 - Sequential queue behavior
 - Task resume / delete / open output actions
@@ -26,6 +26,7 @@
   - `tools/PdfBilingualInspector` for bilingual export inspection
   - `tools/TranslatorCliRunner` for headless single-document reruns using saved local settings
 - Word translation preserves formatting more safely by redistributing translated text at continuous-format-group boundaries instead of raw run-length splits
+- Word range translation now uses approximate source-page detection from rendered/manual page breaks plus section/page-break anchors
 - Translation concurrency is now explicitly split into:
   - document-level parallelism
   - block-level parallelism
@@ -33,6 +34,18 @@
   Default safe mode is `1/1/1`
 - Stream preview panel now wraps text to the visible width
 - Task list context menu now selects the right-clicked row before executing actions
+- Native ebook pipeline added:
+  - EPUB can be translated and exported natively as EPUB or DOCX
+  - MOBI/AZW3 import through `ebook-convert.exe` to EPUB first
+  - EPUB body headings sync back into `nav/ncx` TOC labels
+  - DOCX ebook export supports cover page, metadata/info page, updateable TOC, images, figures, captions, and common inline/block styles
+  - figure/image export now reads real pixel dimensions when available
+- Translation range setting added in UI and settings:
+  - PDF = pages
+  - PPT = slides
+  - Excel = worksheets
+  - EPUB = chapter/content documents
+  - Word = approximate source pages
 
 ## Repository
 
@@ -56,6 +69,9 @@ dotnet run --project .\TranslatorApp\TranslatorApp.csproj
 - PDF layout is much improved, but academic PDFs with dense figures/equations can still need heuristic tuning in `PdfDocumentTranslator.cs`.
 - Inline formulas inside normal prose are now handled more carefully, but formula/prose boundary heuristics are still best-effort and should be regression-checked against papers with dense notation.
 - PDF tables and charts are still handled heuristically: original shapes/images stay in place, while detectable text is translated and redrawn.
+- Word "page range" is still approximate rather than Word-renderer-perfect.
+- EPUB "range" is chapter/content-document based, not reader page-number based.
+- Partial EPUB translation intentionally avoids fully re-translating untouched TOC entries, so mixed translated/untranslated navigation is possible when only some chapters are selected.
 
 ## Where To Edit Next
 
@@ -63,4 +79,5 @@ dotnet run --project .\TranslatorApp\TranslatorApp.csproj
 - AI protocol behavior: `TranslatorApp/Services/Ai`
 - Recovery flow: `TranslatorApp/Services/RecoveryStateService.cs`
 - PDF/OCR behavior: `TranslatorApp/Services/Documents/PdfDocumentTranslator.cs`, `TranslatorApp/Services/OcrService.cs`
+- Ebook behavior: `TranslatorApp/Services/Documents/EbookDocumentTranslator.cs`, `TranslatorApp/Services/Documents/EbookDocxExportService.cs`
 - Remote request throttling: `TranslatorApp/Services/TextTranslationService.cs`, `TranslatorApp/Services/TranslationRequestThrottle.cs`
