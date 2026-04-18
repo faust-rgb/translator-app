@@ -94,6 +94,7 @@ dotnet run --project .\TranslatorApp\TranslatorApp.csproj
   - classifies likely titles, captions, header/footer lines, footnotes, lists, code, and table-like rows
   - uses block-aware redraw margins and overflow fallback
   - wraps translated text character-by-character for Chinese output
+  - most OCR/PDF layout thresholds are now configurable via `OcrSettings` and `TranslationSettings`, especially sparse OCR detection, column detection, marginal-noise filtering, and paragraph continuation heuristics
 - PDF retry logic now does an extra pass for risky English fragments that come back untranslated, and creates a fresh AI client for each retry attempt.
 - Word translation no longer redistributes translated text at raw run granularity; it groups adjacent runs with identical formatting first to preserve formatting boundaries more safely.
 - Ebook support now follows this model:

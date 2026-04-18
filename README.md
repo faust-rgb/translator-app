@@ -21,6 +21,7 @@
 - 支持任务历史持久化。
 - 对扫描版 PDF 增加 OCR 回退模式，需要本地准备 `tessdata`。
 - OCR 分段已增强为“词 -> 行 -> 栏 -> 段落块”聚合，对复杂版式扫描 PDF 更稳。
+- PDF/OCR 关键启发式阈值现已支持配置，包括 OCR 稀疏文本判定、OCR 栏/块聚合、PDF 多栏检测、页边噪声过滤，以及段落续接/横向覆盖判断，便于针对论文版式调优。
 - 支持崩溃恢复与断点续跑，程序重启后会自动恢复未完成任务。
 - 支持独立配置文档级并发、块级并发和全局远端请求并发；默认采用安全模式 `1/1/1`，避免远端 AI 并发限流导致任务失败。
 - Word 翻译会按连续相同格式分组回填译文，尽量保留 Run 级格式边界。
@@ -69,6 +70,24 @@ dotnet run --project .\TranslatorApp\TranslatorApp.csproj
 ## OCR 准备
 
 将 `eng.traineddata`、`chi_sim.traineddata` 放到 `.\tessdata`，或者在界面中指定 `tessdata` 目录。
+
+## PDF / OCR 阈值调优
+
+可以通过 `TranslatorApp/appsettings.json` 或导入/导出设置文件调整 PDF/OCR 相关阈值。当前已开放的关键项包括：
+
+- `Ocr.MinimumNativeTextWords`
+- `Ocr.SparseTextCoverageThreshold`
+- `Ocr.SparseTextBlockThreshold`
+- `Ocr.MinimumAcceptedConfidence`
+- `Ocr.OcrBlockMerge*`
+- `Ocr.OcrColumn*`
+- `Translation.PdfColumn*`
+- `Translation.PdfMarginNoise*`
+- `Translation.PdfParagraph*`
+- `Translation.PdfContinuationMergeMaxVerticalGapRatio`
+- `Translation.PdfLineMergeMaxVerticalGapRatio`
+
+这些设置主要影响扫描版 OCR 回退触发、多栏检测、边缘噪声过滤、段落块续接，以及正文换行/横向覆盖关系判断。
 
 ## 电子书转换准备
 

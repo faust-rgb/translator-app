@@ -39,11 +39,12 @@ public partial class App : Application
             {
                 services.Configure<AppSettings>(context.Configuration);
 
-                services.AddHttpClient();
+                services.AddHttpClient(nameof(OpenAiCompatibleTranslationClient));
+                services.AddHttpClient(nameof(AnthropicCompatibleTranslationClient));
 
                 services.AddSingleton<ISecureApiKeyStorage, SecureApiKeyStorage>();
                 services.AddSingleton<ISettingsService, SettingsService>();
-                services.AddSingleton<IAppLogService, AppLogService>();
+                services.AddSingleton<IAppLogService>(_ => new AppLogService(appDataDirectory));
                 services.AddSingleton<IConnectionTestService, ConnectionTestService>();
                 services.AddSingleton<IGlossaryService, GlossaryService>();
                 services.AddSingleton<IBilingualExportService, BilingualExportService>();

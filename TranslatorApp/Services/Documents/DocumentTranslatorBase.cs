@@ -1,4 +1,5 @@
 using System.IO;
+using System.Threading;
 using TranslatorApp.Configuration;
 using TranslatorApp.Infrastructure;
 using TranslatorApp.Models;
@@ -62,8 +63,7 @@ public abstract class DocumentTranslatorBase(ITextTranslationService textTransla
         }
 
         using var semaphore = new SemaphoreSlim(maxConcurrency);
-        var previewGate = new object();
-        var previewAssigned = false;
+        var previewAssigned = 0;
 
         var tasks = blocks.Select(async (block, index) =>
         {
@@ -71,16 +71,10 @@ public abstract class DocumentTranslatorBase(ITextTranslationService textTransla
             try
             {
                 Func<string, Task>? partialCallback = null;
-                if (onPartialResponse is not null)
+                if (onPartialResponse is not null &&
+                    Interlocked.CompareExchange(ref previewAssigned, 1, 0) == 0)
                 {
-                    lock (previewGate)
-                    {
-                        if (!previewAssigned)
-                        {
-                            previewAssigned = true;
-                            partialCallback = onPartialResponse;
-                        }
-                    }
+                    partialCallback = onPartialResponse;
                 }
 
                 results[index] = await TranslateBlockAsync(

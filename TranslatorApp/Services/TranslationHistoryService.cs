@@ -28,6 +28,8 @@ public sealed class TranslationHistoryService : ITranslationHistoryService
 
     public async Task AddAsync(TranslationHistoryRecord record)
     {
+        ArgumentNullException.ThrowIfNull(record);
+
         await FileLock.WaitAsync();
         try
         {

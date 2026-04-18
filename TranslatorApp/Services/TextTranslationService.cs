@@ -1,6 +1,7 @@
 using TranslatorApp.Configuration;
 using TranslatorApp.Models;
 using TranslatorApp.Services.Ai;
+using System.Runtime.ExceptionServices;
 using System.Text.RegularExpressions;
 
 namespace TranslatorApp.Services;
@@ -36,9 +37,13 @@ public sealed class TextTranslationService(
             OnPartialResponse = onPartialResponse
         };
 
-        var retryCount = Math.Max(0, settings.Translation.RetryCount);
-        var exceptions = new List<Exception>();
-        for (var attempt = 0; attempt <= retryCount; attempt++)
+        var serverErrorRetryCount = ResolveServerErrorRetryCount(settings.Translation);
+        var timeoutRetryCount = Math.Max(0, settings.Translation.TimeoutRetryCount);
+        var exceptions = new List<ExceptionDispatchInfo>();
+        var serverErrorRetriesUsed = 0;
+        var timeoutRetriesUsed = 0;
+
+        while (true)
         {
             try
             {
@@ -70,15 +75,23 @@ public sealed class TextTranslationService(
 
                 return translated;
             }
-            catch (Exception ex) when (attempt < retryCount && ex is not OperationCanceledException)
+            catch (Exception ex) when (ShouldRetryTimeout(ex, cancellationToken) && timeoutRetriesUsed < timeoutRetryCount)
             {
-                exceptions.Add(ex);
-                logService.Error($"翻译请求失败，第 {attempt + 1} 次重试前等待：{ex.Message}");
-                await Task.Delay(TimeSpan.FromSeconds(Math.Min(8, 2 * (attempt + 1))), cancellationToken);
+                exceptions.Add(ExceptionDispatchInfo.Capture(ex));
+                timeoutRetriesUsed++;
+                logService.Error($"翻译请求超时，第 {timeoutRetriesUsed} 次超时重试前等待：{ex.Message}");
+                await Task.Delay(GetRetryDelay(timeoutRetriesUsed), cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && serverErrorRetriesUsed < serverErrorRetryCount)
+            {
+                exceptions.Add(ExceptionDispatchInfo.Capture(ex));
+                serverErrorRetriesUsed++;
+                logService.Error($"翻译请求失败，第 {serverErrorRetriesUsed} 次异常重试前等待：{ex.Message}");
+                await Task.Delay(GetRetryDelay(serverErrorRetriesUsed), cancellationToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                exceptions.Add(ex);
+                exceptions.Add(ExceptionDispatchInfo.Capture(ex));
                 break;
             }
         }
@@ -90,10 +103,12 @@ public sealed class TextTranslationService(
 
         if (exceptions.Count == 1)
         {
-            throw exceptions[0];
+            exceptions[0].Throw();
         }
 
-        throw new AggregateException($"翻译在 {exceptions.Count} 次尝试后仍失败。", exceptions);
+        throw new AggregateException(
+            $"翻译在 {exceptions.Count} 次尝试后仍失败。",
+            exceptions.Select(x => x.SourceException));
     }
 
     private static bool ShouldRetryForUntranslatedFragment(string original, string translated)
@@ -161,4 +176,24 @@ public sealed class TextTranslationService(
 
     private static bool ContainsCjk(string text) =>
         text.Any(ch => ch is >= '\u3400' and <= '\u4DBF' or >= '\u4E00' and <= '\u9FFF' or >= '\uF900' and <= '\uFAFF');
+
+    private static int ResolveServerErrorRetryCount(TranslationSettings settings) =>
+        settings.ServerErrorRetryCount == 2 && settings.RetryCount != 2
+            ? Math.Max(0, settings.RetryCount)
+            : Math.Max(0, settings.ServerErrorRetryCount);
+
+    private static bool ShouldRetryTimeout(Exception ex, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        return ex is TimeoutException
+               || ex is TaskCanceledException
+               || ex.InnerException is TimeoutException;
+    }
+
+    private static TimeSpan GetRetryDelay(int retryIndex) =>
+        TimeSpan.FromSeconds(Math.Min(8, 2 * retryIndex));
 }

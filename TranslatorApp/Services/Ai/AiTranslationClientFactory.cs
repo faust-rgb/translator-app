@@ -8,10 +8,14 @@ public sealed class AiTranslationClientFactory(
     IHttpClientFactory httpClientFactory,
     ITranslationPromptBuilder promptBuilder) : IAiTranslationClientFactory
 {
-    public IAiTranslationClient Create(AiSettings settings) =>
-        settings.ProviderType switch
+    public IAiTranslationClient Create(AiSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        return settings.ProviderType switch
         {
-            "OpenAiCompatible" => new OpenAiCompatibleTranslationClient(httpClientFactory.CreateClient(), promptBuilder, settings),
-            _ => new AnthropicCompatibleTranslationClient(httpClientFactory.CreateClient(), promptBuilder, settings)
+            "OpenAiCompatible" => new OpenAiCompatibleTranslationClient(httpClientFactory.CreateClient(nameof(OpenAiCompatibleTranslationClient)), promptBuilder, settings),
+            _ => new AnthropicCompatibleTranslationClient(httpClientFactory.CreateClient(nameof(AnthropicCompatibleTranslationClient)), promptBuilder, settings)
         };
+    }
 }

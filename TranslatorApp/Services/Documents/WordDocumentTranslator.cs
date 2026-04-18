@@ -60,7 +60,7 @@ public sealed class WordDocumentTranslator(
                 {
                     var runs = paragraph
                         .Descendants<Run>()
-                        .Select(CreateRunInfo)
+                        .Select(run => CreateRunInfo(paragraph, run))
                         .Where(x => x is not null)
                         .Cast<WordRunInfo>()
                         .ToList();
@@ -125,40 +125,20 @@ public sealed class WordDocumentTranslator(
             return;
         }
 
-        var formatGroups = GroupRunsByFormat(runs);
+        var formatGroups = FormattedTextRunHelper.GroupAdjacentRunsByFormat(
+            runs.Select(run => new FormattedTextRun<Text>(run.Texts, run.Original, run.FormatKey)).ToList());
         if (formatGroups.Count == 1)
         {
             ApplySegmentToTexts(formatGroups[0].Texts, translated);
             return;
         }
 
-        var segments = TextDistributionHelper.Distribute(
-            translated,
-            formatGroups.Select(x => Math.Max(1, x.Original.Length)).ToList());
+        var segments = FormattedTextRunHelper.DistributeAcrossGroups(translated, formatGroups);
 
         for (var i = 0; i < formatGroups.Count; i++)
         {
             ApplySegmentToTexts(formatGroups[i].Texts, segments[i]);
         }
-    }
-
-    private static List<WordFormatGroup> GroupRunsByFormat(IReadOnlyList<WordRunInfo> runs)
-    {
-        var groups = new List<WordFormatGroup>();
-
-        foreach (var run in runs)
-        {
-            if (groups.Count > 0 && string.Equals(groups[^1].FormatKey, run.FormatKey, StringComparison.Ordinal))
-            {
-                groups[^1].Texts.AddRange(run.Texts);
-                groups[^1].Original += run.Original;
-                continue;
-            }
-
-            groups.Add(new WordFormatGroup(run.FormatKey, run.Texts.ToList(), run.Original));
-        }
-        
-        return groups;
     }
 
     private static Task ReportPartialAsync(ITranslationProgressService progressService, string sourcePath, string partial)
@@ -208,7 +188,7 @@ public sealed class WordDocumentTranslator(
                sectionType == SectionMarkValues.EvenPage;
     }
 
-    private static WordRunInfo? CreateRunInfo(Run run)
+    private static WordRunInfo? CreateRunInfo(Paragraph paragraph, Run run)
     {
         var texts = run.Elements<Text>().Where(x => !string.IsNullOrEmpty(x.Text)).ToList();
         if (texts.Count == 0)
@@ -216,13 +196,14 @@ public sealed class WordDocumentTranslator(
             return null;
         }
 
-        return new WordRunInfo(texts, string.Concat(texts.Select(x => x.Text)), GetFormatKey(run));
+        return new WordRunInfo(texts, string.Concat(texts.Select(x => x.Text)), GetFormatKey(paragraph, run));
     }
 
-    private static string GetFormatKey(Run run)
+    private static string GetFormatKey(Paragraph paragraph, Run run)
     {
-        var properties = run.RunProperties;
-        return properties?.OuterXml ?? string.Empty;
+        var runProperties = run.RunProperties?.OuterXml ?? string.Empty;
+        var paragraphProperties = paragraph.ParagraphProperties?.OuterXml ?? string.Empty;
+        return $"{paragraphProperties}|{runProperties}";
     }
 
     private static void ApplySegmentToTexts(IReadOnlyList<Text> texts, string segment)
@@ -234,8 +215,8 @@ public sealed class WordDocumentTranslator(
 
         // 保留原始首尾空格信息
         var originalFirstText = texts[0].Text ?? string.Empty;
-        var leadingSpace = GetLeadingWhitespace(originalFirstText);
-        var trailingSpace = GetTrailingWhitespace(texts[^1].Text ?? string.Empty);
+        var leadingSpace = WhitespacePreservationHelper.GetLeadingWhitespace(originalFirstText);
+        var trailingSpace = WhitespacePreservationHelper.GetTrailingWhitespace(texts[^1].Text ?? string.Empty);
 
         // 应用译文，保留空格
         var processedSegment = leadingSpace + segment.Trim() + trailingSpace;
@@ -251,44 +232,6 @@ public sealed class WordDocumentTranslator(
         }
     }
 
-    private static string GetLeadingWhitespace(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-        {
-            return string.Empty;
-        }
-
-        var index = 0;
-        while (index < text.Length && char.IsWhiteSpace(text[index]))
-        {
-            index++;
-        }
-
-        return text[..index];
-    }
-
-    private static string GetTrailingWhitespace(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-        {
-            return string.Empty;
-        }
-
-        var index = text.Length - 1;
-        while (index >= 0 && char.IsWhiteSpace(text[index]))
-        {
-            index--;
-        }
-
-        return text[(index + 1)..];
-    }
-
-    private sealed class WordFormatGroup(string formatKey, List<Text> texts, string original)
-    {
-        public string FormatKey { get; } = formatKey;
-        public List<Text> Texts { get; } = texts;
-        public string Original { get; set; } = original;
-    }
     private sealed record WordRunInfo(IReadOnlyList<Text> Texts, string Original, string FormatKey);
     private sealed record WordPageInfo(Paragraph Paragraph, int PageNumber);
 }

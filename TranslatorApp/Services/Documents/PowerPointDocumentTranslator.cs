@@ -89,10 +89,12 @@ public sealed class PowerPointDocumentTranslator(
                     var translated = translatedBatch[batchIndex];
                     bilingualSegments.Add(new BilingualSegment("PowerPoint 文本框段落", paragraphInfo.Original, translated));
 
-                    var segments = TextDistributionHelper.Distribute(translated, paragraphInfo.Runs.Select(x => Math.Max(1, x.Original.Length)).ToList());
-                    for (var i = 0; i < paragraphInfo.Runs.Count; i++)
+                    var formatGroups = FormattedTextRunHelper.GroupAdjacentRunsByFormat(
+                        paragraphInfo.Runs.Select(run => new FormattedTextRun<A.Text>(run.Texts, run.Original, run.FormatKey)).ToList());
+                    var segments = FormattedTextRunHelper.DistributeAcrossGroups(translated, formatGroups);
+                    for (var i = 0; i < formatGroups.Count; i++)
                     {
-                        ApplySegmentToTexts(paragraphInfo.Runs[i].Texts, segments[i]);
+                        ApplySegmentToTexts(formatGroups[i].Texts, segments[i]);
                     }
                 }
             }
@@ -124,8 +126,14 @@ public sealed class PowerPointDocumentTranslator(
             return null;
         }
 
-        return new PowerPointRunInfo(texts, string.Concat(texts.Select(x => x.Text)));
+        return new PowerPointRunInfo(
+            texts,
+            string.Concat(texts.Select(x => x.Text)),
+            GetFormatKey(run));
     }
+
+    private static string GetFormatKey(A.Run run) =>
+        run.GetFirstChild<A.RunProperties>()?.OuterXml ?? string.Empty;
 
     private static readonly OpenXmlAttribute XmlSpacePreserve =
         new("xml", "space", "http://www.w3.org/XML/1998/namespace", "preserve");
@@ -139,8 +147,8 @@ public sealed class PowerPointDocumentTranslator(
 
         // 保留原始首尾空格信息
         var originalFirstText = texts[0].Text ?? string.Empty;
-        var leadingSpace = GetLeadingWhitespace(originalFirstText);
-        var trailingSpace = GetTrailingWhitespace(texts[^1].Text ?? string.Empty);
+        var leadingSpace = WhitespacePreservationHelper.GetLeadingWhitespace(originalFirstText);
+        var trailingSpace = WhitespacePreservationHelper.GetTrailingWhitespace(texts[^1].Text ?? string.Empty);
 
         // 应用译文，保留空格
         var processedSegment = leadingSpace + segment.Trim() + trailingSpace;
@@ -155,37 +163,5 @@ public sealed class PowerPointDocumentTranslator(
         }
     }
 
-    private static string GetLeadingWhitespace(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-        {
-            return string.Empty;
-        }
-
-        var index = 0;
-        while (index < text.Length && char.IsWhiteSpace(text[index]))
-        {
-            index++;
-        }
-
-        return text[..index];
-    }
-
-    private static string GetTrailingWhitespace(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-        {
-            return string.Empty;
-        }
-
-        var index = text.Length - 1;
-        while (index >= 0 && char.IsWhiteSpace(text[index]))
-        {
-            index--;
-        }
-
-        return text[(index + 1)..];
-    }
-
-    private sealed record PowerPointRunInfo(IReadOnlyList<A.Text> Texts, string Original);
+    private sealed record PowerPointRunInfo(IReadOnlyList<A.Text> Texts, string Original, string FormatKey);
 }

@@ -883,8 +883,20 @@ public sealed class EbookDocxExportService : IEbookDocxExportService
     {
         var baseDirectory = Path.GetDirectoryName(sourcePath)!;
         var normalizedPath = relativeResourcePath.Replace('/', Path.DirectorySeparatorChar);
-        return Path.GetFullPath(Path.Combine(baseDirectory, normalizedPath));
+        var resolvedPath = Path.GetFullPath(Path.Combine(baseDirectory, normalizedPath));
+        var normalizedBaseDirectory = EnsureTrailingDirectorySeparator(Path.GetFullPath(baseDirectory));
+        if (!resolvedPath.StartsWith(normalizedBaseDirectory, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"资源路径越界，已拒绝访问：{relativeResourcePath}");
+        }
+
+        return resolvedPath;
     }
+
+    private static string EnsureTrailingDirectorySeparator(string path) =>
+        path.EndsWith(Path.DirectorySeparatorChar) || path.EndsWith(Path.AltDirectorySeparatorChar)
+            ? path
+            : path + Path.DirectorySeparatorChar;
 
     private static PartTypeInfo? TryResolveImagePartType(string extension) =>
         extension.ToLowerInvariant() switch

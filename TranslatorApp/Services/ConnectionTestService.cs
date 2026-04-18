@@ -10,6 +10,8 @@ public sealed class ConnectionTestService(
 {
     public async Task TestAsync(AppSettings settings, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(settings);
+
         var client = clientFactory.Create(settings.Ai);
         if (settings.Ai.ProviderType == "OpenAiCompatible")
         {

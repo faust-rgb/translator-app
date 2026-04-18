@@ -21,6 +21,7 @@
   - OCR blocks are filtered for likely page-number / header-footer noise before redraw
   - blocks are classified as title / caption / header-footer / footnote / list / code / table row
   - redraw uses block-aware margin, line-height, hanging-indent, and overflow fallback strategies
+  - OCR sparse-text detection, OCR column/block aggregation, PDF column detection, marginal-noise filtering, and paragraph-continuation thresholds are now configurable through settings instead of being hard-coded in one place
 - PDF text translation now retries suspicious English fragments with stronger instructions, and the retry path creates a fresh AI client per attempt to avoid stale-request failures after 504s.
 - Added CLI helpers:
   - `tools/PdfBilingualInspector` for bilingual export inspection
@@ -67,6 +68,7 @@ dotnet run --project .\TranslatorApp\TranslatorApp.csproj
 - Third-party model gateways are only "compatible", so endpoint quirks are expected.
 - PDF resume checkpoints are still saved, but PDF output currently regenerates from page 1 after restart because PDFsharp documents cannot be incrementally re-saved and then modified again.
 - PDF layout is much improved, but academic PDFs with dense figures/equations can still need heuristic tuning in `PdfDocumentTranslator.cs`.
+- Most practical PDF/OCR tuning knobs are now surfaced in `TranslationSettings` / `OcrSettings`, so adjust config first before changing code.
 - Inline formulas inside normal prose are now handled more carefully, but formula/prose boundary heuristics are still best-effort and should be regression-checked against papers with dense notation.
 - PDF tables and charts are still handled heuristically: original shapes/images stay in place, while detectable text is translated and redrawn.
 - Word "page range" is still approximate rather than Word-renderer-perfect.

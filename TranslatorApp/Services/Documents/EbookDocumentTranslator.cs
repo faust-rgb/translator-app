@@ -1,5 +1,6 @@
 using System.IO;
 using System.IO.Compression;
+using System.Text;
 using System.Xml.Linq;
 using TranslatorApp.Infrastructure;
 using TranslatorApp.Models;
@@ -53,6 +54,8 @@ public sealed class EbookDocumentTranslator(
 
     public override async Task TranslateAsync(TranslationJobContext context)
     {
+        ArgumentNullException.ThrowIfNull(context);
+
         var targetExtension = ResolveTargetExtension(context.Settings.Translation.EbookOutputFormat);
         var outputPath = BuildOutputPath(context.Item.SourcePath, context.Settings.Translation.OutputDirectory, targetExtension);
         context.Item.OutputPath = outputPath;
@@ -419,11 +422,12 @@ public sealed class EbookDocumentTranslator(
         var baseDirectory = Path.GetDirectoryName(navigationDocumentPath)!;
         var targetPath = string.IsNullOrWhiteSpace(filePart)
             ? Path.GetFullPath(navigationDocumentPath)
-            : Path.GetFullPath(Path.Combine(baseDirectory, filePart.Replace('/', Path.DirectorySeparatorChar)));
+            : NormalizePackageRelativePath(baseDirectory, filePart);
+        var normalizedFragment = NormalizeAnchorFragment(fragment);
 
-        return string.IsNullOrWhiteSpace(fragment)
+        return string.IsNullOrWhiteSpace(normalizedFragment)
             ? targetPath
-            : $"{targetPath}#{fragment}";
+            : $"{targetPath}#{normalizedFragment}";
     }
 
     private static EpubCoverInfo? ResolveCoverInfo(
@@ -487,7 +491,7 @@ public sealed class EbookDocumentTranslator(
             .Select(x => x.Attribute("src")?.Value)
             .Where(src => !string.IsNullOrWhiteSpace(src))
             .Any(src => string.Equals(
-                Path.GetFullPath(Path.Combine(Path.GetDirectoryName(documentPath)!, src!.Replace('/', Path.DirectorySeparatorChar))),
+                NormalizePackageRelativePath(Path.GetDirectoryName(documentPath)!, src!),
                 Path.GetFullPath(imagePath),
                 StringComparison.OrdinalIgnoreCase));
     }
@@ -577,7 +581,7 @@ public sealed class EbookDocumentTranslator(
 
         if (textNodes.Count == 1)
         {
-            textNodes[0].Value = PreserveEdgeWhitespace(textNodes[0].Value, translated);
+            textNodes[0].Value = WhitespacePreservationHelper.PreserveEdgeWhitespace(textNodes[0].Value, translated);
             return;
         }
 
@@ -587,37 +591,8 @@ public sealed class EbookDocumentTranslator(
 
         for (var index = 0; index < textNodes.Count; index++)
         {
-            textNodes[index].Value = PreserveEdgeWhitespace(textNodes[index].Value, segments[index]);
+            textNodes[index].Value = WhitespacePreservationHelper.PreserveEdgeWhitespace(textNodes[index].Value, segments[index]);
         }
-    }
-
-    private static string PreserveEdgeWhitespace(string original, string translated)
-    {
-        var leading = GetLeadingWhitespace(original);
-        var trailing = GetTrailingWhitespace(original);
-        return string.Concat(leading, translated.Trim(), trailing);
-    }
-
-    private static string GetLeadingWhitespace(string text)
-    {
-        var index = 0;
-        while (index < text.Length && char.IsWhiteSpace(text[index]))
-        {
-            index++;
-        }
-
-        return text[..index];
-    }
-
-    private static string GetTrailingWhitespace(string text)
-    {
-        var index = text.Length - 1;
-        while (index >= 0 && char.IsWhiteSpace(text[index]))
-        {
-            index--;
-        }
-
-        return text[(index + 1)..];
     }
 
     private static string ResolvePackagePath(string extractDirectory)
@@ -635,7 +610,7 @@ public sealed class EbookDocumentTranslator(
             throw new InvalidOperationException("EPUB 缺少 OPF 包文档，无法继续处理。");
         }
 
-        return Path.Combine(extractDirectory, rootFile.Replace('/', Path.DirectorySeparatorChar));
+        return NormalizePackageRelativePath(extractDirectory, rootFile);
     }
 
     private static string ResolveBookTitle(XDocument packageDocument, string sourcePath)
@@ -759,9 +734,34 @@ public sealed class EbookDocumentTranslator(
 
     private static string NormalizePackageRelativePath(string packageDirectory, string relativePath)
     {
-        var normalizedRelativePath = relativePath.Replace('/', Path.DirectorySeparatorChar);
-        return Path.GetFullPath(Path.Combine(packageDirectory, normalizedRelativePath));
+        ArgumentException.ThrowIfNullOrWhiteSpace(packageDirectory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(relativePath);
+
+        var decodedRelativePath = Uri.UnescapeDataString(relativePath).Replace('/', Path.DirectorySeparatorChar);
+        var resolvedPath = Path.GetFullPath(Path.Combine(packageDirectory, decodedRelativePath));
+        var normalizedBaseDirectory = EnsureTrailingDirectorySeparator(Path.GetFullPath(packageDirectory));
+        if (!resolvedPath.StartsWith(normalizedBaseDirectory, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"EPUB 资源路径越界，已拒绝访问：{relativePath}");
+        }
+
+        return resolvedPath;
     }
+
+    private static string NormalizeAnchorFragment(string fragment)
+    {
+        if (string.IsNullOrWhiteSpace(fragment))
+        {
+            return string.Empty;
+        }
+
+        return Uri.UnescapeDataString(fragment).Trim().Normalize(NormalizationForm.FormC);
+    }
+
+    private static string EnsureTrailingDirectorySeparator(string path) =>
+        path.EndsWith(Path.DirectorySeparatorChar) || path.EndsWith(Path.AltDirectorySeparatorChar)
+            ? path
+            : path + Path.DirectorySeparatorChar;
 
     private static void PackDirectoryAsEpub(string sourceDirectory, string outputPath)
     {
@@ -800,7 +800,7 @@ public sealed class EbookDocumentTranslator(
     private static bool PathsEqual(string left, string right) =>
         string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
-    private static void TryDeleteDirectory(string path)
+    private void TryDeleteDirectory(string path)
     {
         try
         {
@@ -809,9 +809,9 @@ public sealed class EbookDocumentTranslator(
                 Directory.Delete(path, recursive: true);
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // ignore temp cleanup failures
+            Log($"清理电子书临时目录失败：{path}，原因：{ex.Message}");
         }
     }
 

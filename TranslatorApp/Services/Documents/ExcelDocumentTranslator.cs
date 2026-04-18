@@ -122,10 +122,12 @@ public sealed class ExcelDocumentTranslator(
                 var translated = translatedBatch[batchIndex];
                 bilingualSegments.Add(new BilingualSegment(item.ContextHint, item.Original, translated));
 
-                var segments = TextDistributionHelper.Distribute(translated, item.Runs.Select(x => Math.Max(1, x.Original.Length)).ToList());
-                for (var i = 0; i < item.Runs.Count; i++)
+                var formatGroups = FormattedTextRunHelper.GroupAdjacentRunsByFormat(
+                    item.Runs.Select(run => new FormattedTextRun<Text>(run.Texts, run.Original, run.FormatKey)).ToList());
+                var segments = FormattedTextRunHelper.DistributeAcrossGroups(translated, formatGroups);
+                for (var i = 0; i < formatGroups.Count; i++)
                 {
-                    ApplySegmentToTexts(item.Runs[i].Texts, segments[i]);
+                    ApplySegmentToTexts(formatGroups[i].Texts, segments[i]);
                 }
 
                 var absoluteIndex = batchStart + batchIndex;
@@ -157,8 +159,14 @@ public sealed class ExcelDocumentTranslator(
             return null;
         }
 
-        return new ExcelRunInfo(texts, string.Concat(texts.Select(x => x.Text)));
+        return new ExcelRunInfo(
+            texts,
+            string.Concat(texts.Select(x => x.Text)),
+            GetFormatKey(run));
     }
+
+    private static string GetFormatKey(Run run) =>
+        run.GetFirstChild<RunProperties>()?.OuterXml ?? string.Empty;
 
     private static void ApplySegmentToTexts(IReadOnlyList<Text> texts, string segment)
     {
@@ -169,8 +177,8 @@ public sealed class ExcelDocumentTranslator(
 
         // 保留原始首尾空格信息
         var originalFirstText = texts[0].Text ?? string.Empty;
-        var leadingSpace = GetLeadingWhitespace(originalFirstText);
-        var trailingSpace = GetTrailingWhitespace(texts[^1].Text ?? string.Empty);
+        var leadingSpace = WhitespacePreservationHelper.GetLeadingWhitespace(originalFirstText);
+        var trailingSpace = WhitespacePreservationHelper.GetTrailingWhitespace(texts[^1].Text ?? string.Empty);
 
         // 应用译文，保留空格
         var processedSegment = leadingSpace + segment.Trim() + trailingSpace;
@@ -185,38 +193,6 @@ public sealed class ExcelDocumentTranslator(
         }
     }
 
-    private static string GetLeadingWhitespace(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-        {
-            return string.Empty;
-        }
-
-        var index = 0;
-        while (index < text.Length && char.IsWhiteSpace(text[index]))
-        {
-            index++;
-        }
-
-        return text[..index];
-    }
-
-    private static string GetTrailingWhitespace(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-        {
-            return string.Empty;
-        }
-
-        var index = text.Length - 1;
-        while (index >= 0 && char.IsWhiteSpace(text[index]))
-        {
-            index--;
-        }
-
-        return text[(index + 1)..];
-    }
-
     private sealed record ExcelTranslationItem(string ContextHint, string Original, IReadOnlyList<ExcelRunInfo> Runs);
-    private sealed record ExcelRunInfo(IReadOnlyList<Text> Texts, string Original);
+    private sealed record ExcelRunInfo(IReadOnlyList<Text> Texts, string Original, string FormatKey);
 }

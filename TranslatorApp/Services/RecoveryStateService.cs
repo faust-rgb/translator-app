@@ -26,6 +26,8 @@ public sealed class RecoveryStateService : IRecoveryStateService
 
     public async Task<DocumentCheckpoint?> GetCheckpointAsync(string sourcePath)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
+
         await FileLock.WaitAsync();
         try
         {
@@ -40,6 +42,9 @@ public sealed class RecoveryStateService : IRecoveryStateService
 
     public async Task SaveCheckpointAsync(DocumentCheckpoint checkpoint)
     {
+        ArgumentNullException.ThrowIfNull(checkpoint);
+        ArgumentException.ThrowIfNullOrWhiteSpace(checkpoint.SourcePath);
+
         await FileLock.WaitAsync();
         try
         {
@@ -64,6 +69,8 @@ public sealed class RecoveryStateService : IRecoveryStateService
 
     public async Task RemoveCheckpointAsync(string sourcePath)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
+
         await FileLock.WaitAsync();
         try
         {
