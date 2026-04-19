@@ -13,10 +13,12 @@ public sealed class OcrService(IAppLogService logService) : IOcrService
 {
     private const double MinRenderScale = 0.5;
     private const double MaxRenderScale = 3.0;
-    private const float MinimumAcceptedConfidence = 35;
 
     public Task<IReadOnlyList<OcrTextBlock>> RecognizePdfPageAsync(string pdfPath, int pageIndex, OcrSettings settings, CancellationToken cancellationToken)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pdfPath);
+        ArgumentNullException.ThrowIfNull(settings);
+
         if (!settings.EnableOcrForScannedPdf)
         {
             return Task.FromResult<IReadOnlyList<OcrTextBlock>>(Array.Empty<OcrTextBlock>());
@@ -65,7 +67,7 @@ public sealed class OcrService(IAppLogService logService) : IOcrService
                     if (iterator.TryGetBoundingBox(PageIteratorLevel.Word, out var rect))
                     {
                         var confidence = iterator.GetConfidence(PageIteratorLevel.Word);
-                        if (confidence < MinimumAcceptedConfidence)
+                        if (confidence < settings.MinimumAcceptedConfidence)
                         {
                             skippedLowConfidence++;
                             continue;
@@ -87,7 +89,7 @@ public sealed class OcrService(IAppLogService logService) : IOcrService
                     logService.Info($"OCR 第 {pageIndex + 1} 页跳过了 {skippedLowConfidence} 个低置信度词。");
                 }
 
-                return BuildBlocks(words, width / renderScale);
+                return BuildBlocks(words, width / renderScale, settings);
             }
             catch (OperationCanceledException)
             {
@@ -107,7 +109,7 @@ public sealed class OcrService(IAppLogService logService) : IOcrService
         return engine.Process(pix);
     }
 
-    private static IReadOnlyList<OcrTextBlock> BuildBlocks(IReadOnlyList<OcrWord> words, double pageWidth)
+    private static IReadOnlyList<OcrTextBlock> BuildBlocks(IReadOnlyList<OcrWord> words, double pageWidth, OcrSettings settings)
     {
         if (words.Count == 0)
         {
@@ -115,7 +117,7 @@ public sealed class OcrService(IAppLogService logService) : IOcrService
         }
 
         var lines = BuildLines(words);
-        var columns = BuildColumns(lines, pageWidth);
+        var columns = BuildColumns(lines, pageWidth, settings);
         var blocks = new List<OcrTextBlock>();
 
         foreach (var column in columns.OrderBy(x => x.Left))
@@ -135,9 +137,9 @@ public sealed class OcrService(IAppLogService logService) : IOcrService
                 var indentationGap = Math.Abs(line.Left - current.Left);
                 var widthSimilarity = Math.Abs(line.Width - current.Width);
                 var shouldMerge =
-                    verticalGap < Math.Max(16, current.Height * 0.95) &&
-                    indentationGap < Math.Max(18, current.Height * 1.2) &&
-                    widthSimilarity < Math.Max(50, current.Width * 0.55);
+                    verticalGap < Math.Max(16, current.Height * settings.OcrBlockMergeVerticalGapRatio) &&
+                    indentationGap < Math.Max(18, current.Height * settings.OcrBlockMergeIndentationRatio) &&
+                    widthSimilarity < Math.Max(50, current.Width * settings.OcrBlockMergeWidthDifferenceRatio);
 
                 if (shouldMerge)
                 {
@@ -188,16 +190,16 @@ public sealed class OcrService(IAppLogService logService) : IOcrService
             .ToList();
     }
 
-    private static List<OcrColumn> BuildColumns(IReadOnlyList<OcrLine> lines, double pageWidth)
+    private static List<OcrColumn> BuildColumns(IReadOnlyList<OcrLine> lines, double pageWidth, OcrSettings settings)
     {
         var columns = new List<OcrColumn>();
 
         foreach (var line in lines)
         {
             var column = columns.FirstOrDefault(x =>
-                Math.Abs(x.Center - line.Center) < pageWidth * 0.12 ||
-                Math.Abs(x.Left - line.Left) < pageWidth * 0.08 ||
-                OverlapRatio(x.Left, x.Right, line.Left, line.Right) > 0.35);
+                Math.Abs(x.Center - line.Center) < pageWidth * settings.OcrColumnCenterToleranceRatio ||
+                Math.Abs(x.Left - line.Left) < pageWidth * settings.OcrColumnLeftToleranceRatio ||
+                OverlapRatio(x.Left, x.Right, line.Left, line.Right) > settings.OcrColumnOverlapThreshold);
 
             if (column is null)
             {

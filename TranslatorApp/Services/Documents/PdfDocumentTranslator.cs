@@ -2,6 +2,7 @@ using System.IO;
 using PdfSharp.Drawing;
 using PdfSharp.Drawing.Layout;
 using PdfSharp.Pdf.IO;
+using TranslatorApp.Configuration;
 using TranslatorApp.Infrastructure;
 using TranslatorApp.Models;
 using UglyToad.PdfPig.Content;
@@ -21,6 +22,8 @@ public sealed class PdfDocumentTranslator(
 
     public override async Task TranslateAsync(TranslationJobContext context)
     {
+        ArgumentNullException.ThrowIfNull(context);
+
         var outputPath = BuildOutputPath(context.Item.SourcePath, context.Settings.Translation.OutputDirectory);
         context.Item.OutputPath = outputPath;
 
@@ -33,6 +36,49 @@ public sealed class PdfDocumentTranslator(
         using var pig = UglyToad.PdfPig.PdfDocument.Open(context.Item.SourcePath);
         using var outputPdf = new PdfSharp.Pdf.PdfDocument();
         var bilingualSegments = new List<BilingualSegment>();
+        var preparedPages = new List<PreparedPdfPage>(inputPdf.PageCount);
+        var requestedRange = GetRequestedRange(context.Settings, inputPdf.PageCount);
+        var layoutHeuristics = BuildLayoutHeuristics(context.Settings.Translation);
+        var minimumNativeTextWords = Math.Clamp(context.Settings.Ocr.MinimumNativeTextWords, 0, 500);
+        if (minimumNativeTextWords != context.Settings.Ocr.MinimumNativeTextWords)
+        {
+            Log($"OCR 原生文本阈值 {context.Settings.Ocr.MinimumNativeTextWords} 超出合理范围，已自动修正为 {minimumNativeTextWords}。");
+        }
+
+        for (var pageIndex = 0; pageIndex < inputPdf.PageCount; pageIndex++)
+        {
+            await context.PauseController.WaitIfPausedAsync(context.CancellationToken);
+            context.CancellationToken.ThrowIfCancellationRequested();
+
+            var pigPage = pig.GetPage(pageIndex + 1);
+            var blocks = BuildTextBlocks(pigPage, layoutHeuristics);
+            var useOcr = ShouldUseOcr(pigPage, blocks, context.Settings.Ocr, minimumNativeTextWords);
+            if (useOcr)
+            {
+                try
+                {
+                    var sourcePage = inputPdf.Pages[pageIndex];
+                    var ocrBlocks = await ocrService.RecognizePdfPageAsync(context.Item.SourcePath, pageIndex, context.Settings.Ocr, context.CancellationToken);
+                    if (ocrBlocks.Count > 0)
+                    {
+                        blocks = ocrBlocks
+                            .Where(block => ShouldKeepOcrBlock(block, sourcePage.Width.Point, sourcePage.Height.Point))
+                            .Select(block => ToPdfTextBlock(block, sourcePage.Width.Point, sourcePage.Height.Point))
+                            .ToList();
+                        Log($"PDF 第 {pageIndex + 1} 页已切换到 OCR 模式。");
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    Log($"PDF 第 {pageIndex + 1} 页 OCR 失败，已回退到原生文本提取：{ex.Message}");
+                }
+            }
+
+            preparedPages.Add(new PreparedPdfPage(pageIndex, blocks));
+        }
+
+        preparedPages = NormalizeBoundaryHyphenation(preparedPages, layoutHeuristics);
+        preparedPages = NormalizeContinuationBlocks(preparedPages, layoutHeuristics);
 
         for (var pageIndex = 0; pageIndex < inputPdf.PageCount; pageIndex++)
         {
@@ -40,39 +86,27 @@ public sealed class PdfDocumentTranslator(
             context.CancellationToken.ThrowIfCancellationRequested();
 
             var importedPage = outputPdf.AddPage(inputPdf.Pages[pageIndex]);
-            var pigPage = pig.GetPage(pageIndex + 1);
-            var blocks = BuildTextBlocks(pigPage);
-            var useOcr = ShouldUseOcr(pigPage, blocks, context.Settings.Ocr.MinimumNativeTextWords);
-            if (useOcr)
+            if (!IsWithinRequestedRange(pageIndex + 1, requestedRange))
             {
-                var ocrBlocks = await ocrService.RecognizePdfPageAsync(context.Item.SourcePath, pageIndex, context.Settings.Ocr, context.CancellationToken);
-                if (ocrBlocks.Count > 0)
-                {
-                    blocks = ocrBlocks
-                        .Where(block => ShouldKeepOcrBlock(block, importedPage.Width.Point, importedPage.Height.Point))
-                        .Select(block => ToPdfTextBlock(block, importedPage.Width.Point, importedPage.Height.Point))
-                        .ToList();
-                    Log($"PDF 第 {pageIndex + 1} 页已切换到 OCR 模式。");
-                }
+                continue;
             }
 
+            var blocks = preparedPages[pageIndex].Blocks;
             using var graphics = XGraphics.FromPdfPage(importedPage, XGraphicsPdfPageOptions.Append);
             var translatableBlocks = blocks
                 .Select((block, index) => new { Block = block, BlockIndex = index })
                 .Where(x => !string.IsNullOrWhiteSpace(x.Block.Text))
                 .ToList();
 
-            var translationMap = new Dictionary<int, string>();
-            var nonFormulaBlocks = translatableBlocks
-                .Where(x => !IsFormulaLikeBlock(x.Block))
-                .ToList();
+            var translationMap = new Dictionary<int, List<PdfTranslatedTarget>>();
+            var translationUnits = BuildPdfTranslationUnits(blocks, layoutHeuristics);
             var batchSize = GetBlockTranslationConcurrency(context.Settings);
 
-            for (var batchStart = 0; batchStart < nonFormulaBlocks.Count; batchStart += batchSize)
+            for (var batchStart = 0; batchStart < translationUnits.Count; batchStart += batchSize)
             {
-                var batch = nonFormulaBlocks.Skip(batchStart).Take(batchSize).ToList();
+                var batch = translationUnits.Skip(batchStart).Take(batchSize).ToList();
                 var translatedBatch = await TranslateBatchAsync(
-                    batch.Select(x => new TranslationBlock(x.Block.Text, $"PDF 第 {pageIndex + 1} 页文本块 {x.BlockIndex + 1}")).ToList(),
+                    batch.Select(x => CreatePdfTranslationBlock(preparedPages, pageIndex, x.ContextBlockIndex, x.SourceText)).ToList(),
                     context.Settings,
                     context.PauseController,
                     partial => ReportPartialAsync(progressService, context.Item.SourcePath, partial),
@@ -80,7 +114,19 @@ public sealed class PdfDocumentTranslator(
 
                 for (var batchIndex = 0; batchIndex < batch.Count; batchIndex++)
                 {
-                    translationMap[batch[batchIndex].BlockIndex] = translatedBatch[batchIndex] ?? string.Empty;
+                    var unit = batch[batchIndex];
+                    var translated = translatedBatch[batchIndex] ?? string.Empty;
+                    var distributed = DistributeTranslationAcrossBlocks(unit, translated);
+                    foreach (var item in distributed)
+                    {
+                        if (!translationMap.TryGetValue(item.BlockIndex, out var items))
+                        {
+                            items = [];
+                            translationMap[item.BlockIndex] = items;
+                        }
+
+                        items.Add(item);
+                    }
                 }
             }
 
@@ -94,21 +140,22 @@ public sealed class PdfDocumentTranslator(
                         continue;
                     }
 
-                    var translated = translationMap.GetValueOrDefault(entry.BlockIndex, string.Empty);
+                    var translated = BuildTranslatedBlockText(translationMap.GetValueOrDefault(entry.BlockIndex));
                     bilingualSegments.Add(new BilingualSegment($"PDF 第 {pageIndex + 1} 页", entry.Block.Text, translated));
                     DrawTranslatedBlock(graphics, importedPage.Width.Point, importedPage.Height.Point, entry.Block, translated, context.Settings);
                 }
                 catch (Exception ex)
                 {
-                    throw new InvalidOperationException(
-                        $"PDF 第 {pageIndex + 1} 页文本块 {entry.BlockIndex + 1} 处理失败：{ex.Message}",
-                        ex);
+                    Log($"PDF 第 {pageIndex + 1} 页文本块 {entry.BlockIndex + 1} 处理失败，已跳过该块：{ex.Message}");
+                    bilingualSegments.Add(new BilingualSegment($"PDF 第 {pageIndex + 1} 页", entry.Block.Text, entry.Block.Text));
                 }
             }
 
-            var progress = (int)Math.Round((pageIndex + 1) * 100d / Math.Max(1, inputPdf.PageCount));
-            await context.ReportProgressAsync(progress, $"PDF 页面 {pageIndex + 1}/{inputPdf.PageCount}，文本块 {blocks.Count}");
-            await context.SaveCheckpointAsync(pageIndex + 1, 0, $"PDF 页面 {pageIndex + 1}/{inputPdf.PageCount}");
+            var rangeLength = requestedRange.End - requestedRange.Start + 1;
+            var completedInRange = pageIndex - requestedRange.Start + 2;
+            var progress = (int)Math.Round(completedInRange * 100d / Math.Max(1, rangeLength));
+            await context.ReportProgressAsync(progress, $"PDF 页面 {pageIndex + 1}/{inputPdf.PageCount}（范围 {requestedRange.Start}-{requestedRange.End}），文本块 {blocks.Count}");
+            await context.SaveCheckpointAsync(completedInRange, 0, $"PDF 页面 {pageIndex + 1}/{inputPdf.PageCount}");
         }
 
         outputPdf.Save(outputPath);
@@ -119,7 +166,705 @@ public sealed class PdfDocumentTranslator(
         }
     }
 
-    private static bool ShouldUseOcr(Page page, IReadOnlyList<PdfTextBlock> blocks, int minimumNativeTextWords)
+    private static TranslationBlock CreatePdfTranslationBlock(
+        IReadOnlyList<PreparedPdfPage> pages,
+        int pageIndex,
+        int blockIndex,
+        string? overrideText = null)
+    {
+        var block = pages[pageIndex].Blocks[blockIndex];
+        var contextHint = BuildPdfContextHint(pages, pageIndex, blockIndex);
+        if (ContainsFormulaContent(block))
+        {
+            contextHint += "；当前片段包含公式、变量或编号。请翻译可翻译的正文内容，并严格保留公式、变量名、运算符、编号和引用格式。";
+        }
+
+        return new TranslationBlock(overrideText ?? block.Text, contextHint, BuildPdfAdditionalRequirements(block));
+    }
+
+    private static string BuildPdfAdditionalRequirements(PdfTextBlock block)
+    {
+        var requirements = new List<string>();
+
+        if (block.Region != PdfBlockRegion.Body)
+        {
+            requirements.Add($"页面区域：{DescribeRegion(block.Region)}。请保持该区域常见的表达方式和结构，不要把它改写成普通正文。");
+        }
+
+        switch (block.BlockType)
+        {
+            case PdfBlockType.Title:
+                requirements.Add("类型：标题。请保持标题风格，译文尽量简洁，不要擅自补充说明或改写成正文语气。");
+                break;
+            case PdfBlockType.Caption:
+                requirements.Add("类型：图注。请保留图号、表号、子图编号（如(a)/(b)）、单位、变量名和引用标记；语言保持简洁，不要扩写。");
+                break;
+            case PdfBlockType.TableRow:
+                requirements.Add("类型：表格。请严格保持列顺序、数字、单位、百分比、正负号和变量符号，不要把多列内容合并成解释性整句。");
+                break;
+            case PdfBlockType.ListItem:
+                requirements.Add("类型：列表。请保留项目符号、编号层级和换行结构，不要把多个条目合并成一段。");
+                break;
+            case PdfBlockType.Code:
+                requirements.Add("类型：代码。只翻译自然语言说明，保留代码、路径、API 名称、命令行参数和符号原样。");
+                break;
+            case PdfBlockType.Footnote:
+                requirements.Add("类型：脚注。请保留脚注编号/符号与引用关系，语言可简洁但不要漏译。");
+                break;
+            case PdfBlockType.HeaderFooter:
+                requirements.Add("类型：页眉页脚。请保留页码、编号、期刊信息和短标题的结构，不要扩写。");
+                break;
+        }
+
+        if (ContainsFormulaContent(block))
+        {
+            requirements.Add("当前片段含公式或变量。请仅翻译自然语言部分，严格保留公式、变量名、上下标、编号、引用、单位和符号。");
+        }
+
+        if (block.Source == PdfTextSource.Ocr)
+        {
+            requirements.Add("当前片段来自 OCR。请结合上下文纠正明显断词，但不要臆造原文中不存在的数字、公式或专有名词。");
+        }
+
+        return string.Join("\n", requirements);
+    }
+
+    private static List<PdfTranslationUnit> BuildPdfTranslationUnits(IReadOnlyList<PdfTextBlock> blocks, PdfLayoutHeuristics heuristics)
+    {
+        var units = new List<PdfTranslationUnit>();
+
+        for (var index = 0; index < blocks.Count; index++)
+        {
+            var block = blocks[index];
+            if (string.IsNullOrWhiteSpace(block.Text) || IsFormulaLikeBlock(block))
+            {
+                continue;
+            }
+
+            if (block.BlockType == PdfBlockType.TableRow)
+            {
+                var cellTexts = SplitTableRowSegments(block.Text);
+                if (cellTexts.Count > 1)
+                {
+                    for (var cellIndex = 0; cellIndex < cellTexts.Count; cellIndex++)
+                    {
+                        units.Add(new PdfTranslationUnit(
+                            [new PdfTranslationTarget(index, cellIndex, "  ", cellTexts[cellIndex])],
+                            index,
+                            cellTexts[cellIndex]));
+                    }
+
+                    continue;
+                }
+            }
+
+            if (!CanBeGroupedForParagraphTranslation(block))
+            {
+                units.Add(new PdfTranslationUnit(
+                    [new PdfTranslationTarget(index, 0, " ", block.Text)],
+                    index,
+                    block.Text));
+                continue;
+            }
+
+            var groupedIndices = new List<int> { index };
+            var groupedTexts = new List<string> { block.Text };
+            var builder = new System.Text.StringBuilder(block.Text.Trim());
+            while (!EndsWithSentencePunctuation(builder.ToString()) && index + 1 < blocks.Count)
+            {
+                var nextIndex = index + 1;
+                var nextBlock = blocks[nextIndex];
+                if (!CanBeGroupedWithParagraph(blocks[groupedIndices[^1]], nextBlock, heuristics))
+                {
+                    break;
+                }
+
+                AppendGroupedBlockText(builder, nextBlock.Text);
+                groupedIndices.Add(nextIndex);
+                groupedTexts.Add(nextBlock.Text);
+                index = nextIndex;
+            }
+
+            units.Add(new PdfTranslationUnit(
+                groupedIndices.Select(blockIndex => new PdfTranslationTarget(blockIndex, 0, " ", blocks[blockIndex].Text)).ToList(),
+                groupedIndices[0],
+                builder.ToString().Trim()));
+        }
+
+        return units;
+    }
+
+    private static List<PdfTranslatedTarget> DistributeTranslationAcrossBlocks(PdfTranslationUnit unit, string translated)
+    {
+        if (unit.Targets.Count == 1)
+        {
+            var target = unit.Targets[0];
+            return [new PdfTranslatedTarget(target.BlockIndex, target.Order, translated, target.Joiner)];
+        }
+
+        var weights = unit.Targets.Select(target => Math.Max(1, target.OriginalText.Trim().Length)).ToList();
+        var segments = TextDistributionHelper.Distribute(translated, weights);
+        var result = new List<PdfTranslatedTarget>(unit.Targets.Count);
+        for (var i = 0; i < unit.Targets.Count; i++)
+        {
+            var target = unit.Targets[i];
+            result.Add(new PdfTranslatedTarget(
+                target.BlockIndex,
+                target.Order,
+                i < segments.Count ? segments[i].Trim() : string.Empty,
+                target.Joiner));
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<string> SplitTableRowSegments(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return [];
+        }
+
+        var segments = System.Text.RegularExpressions.Regex
+            .Split(text.Trim(), @"(?:\t+|\s{2,}|(?<=\S)\s\|\s(?=\S))")
+            .Select(segment => segment.Trim())
+            .Where(segment => !string.IsNullOrWhiteSpace(segment))
+            .ToList();
+
+        return segments.Count > 1 ? segments : [text.Trim()];
+    }
+
+    private static string BuildTranslatedBlockText(IReadOnlyList<PdfTranslatedTarget>? items)
+    {
+        if (items is null || items.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var ordered = items.OrderBy(item => item.Order).ToList();
+        if (ordered.Count == 1)
+        {
+            return ordered[0].Text;
+        }
+
+        var builder = new System.Text.StringBuilder();
+        for (var i = 0; i < ordered.Count; i++)
+        {
+            if (i > 0)
+            {
+                builder.Append(ordered[i - 1].Joiner);
+            }
+
+            builder.Append(ordered[i].Text);
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    private static bool CanBeGroupedForParagraphTranslation(PdfTextBlock block) =>
+        block.BlockType == PdfBlockType.Normal &&
+        block.Region == PdfBlockRegion.Body &&
+        CanUseAsTranslationContext(block);
+
+    private static bool CanBeGroupedWithParagraph(PdfTextBlock previous, PdfTextBlock current, PdfLayoutHeuristics heuristics)
+    {
+        if (!CanBeGroupedForParagraphTranslation(current))
+        {
+            return false;
+        }
+
+        if (previous.Region != current.Region)
+        {
+            return false;
+        }
+
+        var lineHeight = Math.Max(previous.LineHeight, current.LineHeight);
+        var verticalGap = previous.Bottom - current.Top;
+        if (verticalGap < -2 || verticalGap > lineHeight * heuristics.ParagraphGroupingMaxVerticalGapRatio)
+        {
+            return false;
+        }
+
+        var previousText = previous.Text.TrimEnd();
+        var currentText = current.Text.TrimStart();
+        if (EndsWithSentencePunctuation(previousText))
+        {
+            return false;
+        }
+
+        if (EndsWithHyphen(previousText))
+        {
+            return true;
+        }
+
+        if (StartsWithContinuationCue(currentText) || StartsWithLowercaseWord(currentText))
+        {
+            return true;
+        }
+
+        return HasParagraphContinuationGeometry(previous, current, lineHeight, allowLooseWrap: true, heuristics);
+    }
+
+    private static void AppendGroupedBlockText(System.Text.StringBuilder builder, string nextText)
+    {
+        var current = builder.ToString().TrimEnd();
+        var next = (nextText ?? string.Empty).TrimStart();
+        builder.Clear();
+        if (string.IsNullOrWhiteSpace(current))
+        {
+            builder.Append(next);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(next))
+        {
+            builder.Append(current);
+            return;
+        }
+
+        if (EndsWithHyphen(current))
+        {
+            builder.Append(current.AsSpan(0, TrimTrailingHyphenLength(current)));
+            builder.Append(next);
+            return;
+        }
+
+        builder.Append(current);
+        builder.Append(' ');
+        builder.Append(next);
+    }
+
+    private static string BuildPdfContextHint(
+        IReadOnlyList<PreparedPdfPage> pages,
+        int pageIndex,
+        int blockIndex)
+    {
+        var block = pages[pageIndex].Blocks[blockIndex];
+        var previous = FindNeighborBlockText(pages, pageIndex, blockIndex, searchBackward: true, block.Region);
+        var next = FindNeighborBlockText(pages, pageIndex, blockIndex, searchBackward: false, block.Region);
+        var location = $"PDF 第 {pageIndex + 1} 页文本块 {blockIndex + 1}";
+        var hints = new List<string> { location };
+
+        if (block.Region != PdfBlockRegion.Body)
+        {
+            hints.Add($"区域：{DescribeRegion(block.Region)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(previous))
+        {
+            hints.Add($"前文：{previous}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(next))
+        {
+            hints.Add($"后文：{next}");
+        }
+
+        if (LooksLikeCrossPageContinuation(pages, pageIndex, blockIndex))
+        {
+            hints.Add("当前文本很可能是跨页续句。请结合前后文完整翻译当前片段，但不要把前后文一并输出。");
+        }
+
+        return string.Join("；", hints);
+    }
+
+    private static List<PreparedPdfPage> NormalizeBoundaryHyphenation(IReadOnlyList<PreparedPdfPage> pages, PdfLayoutHeuristics heuristics)
+    {
+        if (pages.Count == 0)
+        {
+            return pages.ToList();
+        }
+
+        var normalizedPages = pages
+            .Select(page => new PreparedPdfPage(page.PageIndex, page.Blocks.ToList()))
+            .ToList();
+
+        for (var pageIndex = 0; pageIndex < normalizedPages.Count; pageIndex++)
+        {
+            var currentBlocks = normalizedPages[pageIndex].Blocks.ToList();
+            for (var blockIndex = 0; blockIndex < currentBlocks.Count; blockIndex++)
+            {
+                var currentText = currentBlocks[blockIndex].Text;
+                if (!EndsWithHyphen(currentText))
+                {
+                    continue;
+                }
+
+                if (!TryFindNextHyphenContinuationBlock(normalizedPages, pageIndex, blockIndex, heuristics, out var nextPageIndex, out var nextBlockIndex))
+                {
+                    continue;
+                }
+
+                var nextBlocks = normalizedPages[nextPageIndex].Blocks.ToList();
+                if (!TryMergeBoundaryHyphenatedWord(currentText, nextBlocks[nextBlockIndex].Text, out var mergedCurrent, out var trimmedNext))
+                {
+                    continue;
+                }
+
+                currentBlocks[blockIndex] = currentBlocks[blockIndex].WithText(mergedCurrent);
+                normalizedPages[pageIndex] = normalizedPages[pageIndex] with { Blocks = currentBlocks };
+                nextBlocks[nextBlockIndex] = nextBlocks[nextBlockIndex].WithText(trimmedNext);
+                normalizedPages[nextPageIndex] = normalizedPages[nextPageIndex] with { Blocks = nextBlocks };
+            }
+        }
+
+        return normalizedPages;
+    }
+
+    private static List<PreparedPdfPage> NormalizeContinuationBlocks(IReadOnlyList<PreparedPdfPage> pages, PdfLayoutHeuristics heuristics)
+    {
+        if (pages.Count == 0)
+        {
+            return pages.ToList();
+        }
+
+        return pages
+            .Select(page => new PreparedPdfPage(page.PageIndex, MergeContinuationBlocks(page.Blocks, heuristics)))
+            .ToList();
+    }
+
+    private static IReadOnlyList<PdfTextBlock> MergeContinuationBlocks(IReadOnlyList<PdfTextBlock> blocks, PdfLayoutHeuristics heuristics)
+    {
+        if (blocks.Count <= 1)
+        {
+            return blocks.ToList();
+        }
+
+        var merged = new List<PdfTextBlock> { blocks[0] };
+        for (var index = 1; index < blocks.Count; index++)
+        {
+            var current = blocks[index];
+            var previous = merged[^1];
+
+            if (ShouldMergeContinuationBlocks(previous, current, heuristics))
+            {
+                merged[^1] = previous.Merge(current.Text, current.Rect, current.LineHeight, current.Style);
+            }
+            else
+            {
+                merged.Add(current);
+            }
+        }
+
+        return merged;
+    }
+
+    private static bool ShouldMergeContinuationBlocks(PdfTextBlock previous, PdfTextBlock current, PdfLayoutHeuristics heuristics)
+    {
+        if (IsFormulaLikeBlock(previous) || IsFormulaLikeBlock(current))
+        {
+            return false;
+        }
+
+        if (!CanUseAsTranslationContext(previous) || !CanUseAsTranslationContext(current))
+        {
+            return false;
+        }
+
+        if (previous.BlockType != PdfBlockType.Normal || current.BlockType != PdfBlockType.Normal)
+        {
+            return false;
+        }
+
+        if (previous.Region != current.Region)
+        {
+            return false;
+        }
+
+        var lineHeight = Math.Max(previous.LineHeight, current.LineHeight);
+        var verticalGap = previous.Bottom - current.Top;
+        if (verticalGap < -2 || verticalGap > lineHeight * heuristics.ContinuationMergeMaxVerticalGapRatio)
+        {
+            return false;
+        }
+
+        var sameColumn = HasParagraphContinuationGeometry(previous, current, lineHeight, allowLooseWrap: true, heuristics);
+        if (!sameColumn)
+        {
+            return false;
+        }
+
+        var previousTrimmed = previous.Text.TrimEnd();
+        var currentTrimmed = current.Text.TrimStart();
+        var previousEndsSentence = EndsWithSentencePunctuation(previousTrimmed);
+        var currentStartsSentence = StartsWithSentenceCandidate(currentTrimmed);
+        var previousParagraphSized = previous.Width > lineHeight * 10;
+        var currentParagraphSized = current.Width > lineHeight * 10;
+        if (previousEndsSentence && currentStartsSentence)
+        {
+            return false;
+        }
+
+        if (EndsWithHyphen(previousTrimmed) && StartsWithLowercaseWord(currentTrimmed))
+        {
+            return true;
+        }
+
+        var currentStartsContinuation = StartsWithContinuationCue(currentTrimmed) || StartsWithLowercaseWord(currentTrimmed);
+        if (!sameColumn &&
+            !previousEndsSentence &&
+            currentStartsContinuation &&
+            previousParagraphSized &&
+            currentParagraphSized &&
+            current.Left <= previous.Right + Math.Max(42, lineHeight * heuristics.ParagraphLooseWrapForwardRatio) &&
+            current.Right >= previous.Left + Math.Max(30, lineHeight * heuristics.ParagraphLooseWrapBackwardRatio))
+        {
+            return true;
+        }
+
+        return !previousEndsSentence && currentStartsContinuation;
+    }
+
+    private static bool TryMergeBoundaryHyphenatedWord(string currentText, string nextText, out string mergedCurrent, out string trimmedNext)
+    {
+        mergedCurrent = currentText;
+        trimmedNext = nextText;
+
+        var currentTrimIndex = TrimTrailingHyphenLength(currentText);
+        if (currentTrimIndex >= currentText.Length)
+        {
+            return false;
+        }
+
+        var currentPrefix = currentText[..currentTrimIndex];
+        var trailingLetters = GetTrailingAsciiLetters(currentPrefix);
+        if (trailingLetters.Length < 2)
+        {
+            return false;
+        }
+
+        var nextStart = GetLeadingLowercaseAsciiWordLength(nextText);
+        if (nextStart <= 0)
+        {
+            return false;
+        }
+
+        var carried = nextText[..nextStart];
+        mergedCurrent = currentPrefix + carried;
+        trimmedNext = nextText[nextStart..].TrimStart();
+        return true;
+    }
+
+    private static bool TryFindNextHyphenContinuationBlock(
+        IReadOnlyList<PreparedPdfPage> pages,
+        int pageIndex,
+        int blockIndex,
+        PdfLayoutHeuristics heuristics,
+        out int nextPageIndex,
+        out int nextBlockIndex)
+    {
+        var sourceBlock = pages[pageIndex].Blocks[blockIndex];
+
+        for (var currentPage = pageIndex; currentPage < pages.Count; currentPage++)
+        {
+            var startIndex = currentPage == pageIndex ? blockIndex + 1 : 0;
+            for (var currentBlock = startIndex; currentBlock < pages[currentPage].Blocks.Count; currentBlock++)
+            {
+                var candidate = pages[currentPage].Blocks[currentBlock];
+                if (!CanUseAsTranslationContext(candidate))
+                {
+                    continue;
+                }
+
+                if (IsLikelyHyphenContinuationTarget(sourceBlock, candidate, samePage: currentPage == pageIndex, heuristics))
+                {
+                    nextPageIndex = currentPage;
+                    nextBlockIndex = currentBlock;
+                    return true;
+                }
+
+                nextPageIndex = -1;
+                nextBlockIndex = -1;
+                return false;
+            }
+        }
+
+        nextPageIndex = -1;
+        nextBlockIndex = -1;
+        return false;
+    }
+
+    private static bool IsLikelyHyphenContinuationTarget(PdfTextBlock source, PdfTextBlock candidate, bool samePage, PdfLayoutHeuristics heuristics)
+    {
+        if (!StartsWithLowercaseWord(candidate.Text))
+        {
+            return false;
+        }
+
+        var lineHeight = Math.Max(source.LineHeight, candidate.LineHeight);
+        var sameColumn = HasParagraphContinuationGeometry(source, candidate, lineHeight, allowLooseWrap: true, heuristics);
+
+        if (samePage)
+        {
+            var verticalGap = source.Bottom - candidate.Top;
+            var gapLooksContinuous = verticalGap >= -2 && verticalGap < lineHeight * 2.8;
+            if (!gapLooksContinuous)
+            {
+                return false;
+            }
+
+            if (sameColumn)
+            {
+                return true;
+            }
+
+            return candidate.Left <= source.Right + Math.Max(48, lineHeight * (heuristics.ParagraphLooseWrapForwardRatio + 0.5)) &&
+                   candidate.Right >= source.Left + Math.Max(30, lineHeight * heuristics.ParagraphLooseWrapBackwardRatio);
+        }
+
+        return sameColumn || source.Width > candidate.Width * 0.7 || candidate.Width > source.Width * 0.7;
+    }
+
+    private static bool HasParagraphContinuationGeometry(
+        PdfTextBlock previous,
+        PdfTextBlock current,
+        double lineHeight,
+        bool allowLooseWrap,
+        PdfLayoutHeuristics heuristics)
+    {
+        var leftAligned = Math.Abs(previous.Left - current.Left) < Math.Max(18, lineHeight * heuristics.ParagraphLeftAlignToleranceRatio);
+        var rightAligned = Math.Abs(previous.Right - current.Right) < Math.Max(26, lineHeight * heuristics.ParagraphRightAlignToleranceRatio);
+        var overlap = Math.Min(previous.Right, current.Right) - Math.Max(previous.Left, current.Left);
+        var overlapRatio = overlap / Math.Max(1, Math.Min(previous.Width, current.Width));
+        if (overlapRatio > heuristics.ParagraphOverlapThreshold || leftAligned || rightAligned)
+        {
+            return true;
+        }
+
+        if (!allowLooseWrap)
+        {
+            return false;
+        }
+
+        // 对论文正文的换行续写更宽松：上一行可能偏短，下一行重新回到左边界。
+        var horizontalGap = current.Left - previous.Right;
+        var horizontallyNearby = horizontalGap < Math.Max(28, lineHeight * heuristics.ParagraphHorizontalGapRatio);
+        var rangesStillRelated = current.Right > previous.Left + Math.Max(24, lineHeight * heuristics.ParagraphRangeRelationRatio) &&
+                                 previous.Right > current.Left - Math.Max(24, lineHeight * heuristics.ParagraphRangeRelationRatio);
+        var paragraphSized = previous.Width > lineHeight * heuristics.ParagraphMinWidthRatio &&
+                             current.Width > lineHeight * heuristics.ParagraphMinWidthRatio;
+
+        if (paragraphSized && horizontallyNearby && rangesStillRelated)
+        {
+            return true;
+        }
+
+        return paragraphSized &&
+               current.Left <= previous.Right + Math.Max(42, lineHeight * heuristics.ParagraphLooseWrapForwardRatio) &&
+               current.Right >= previous.Left + Math.Max(30, lineHeight * heuristics.ParagraphLooseWrapBackwardRatio);
+    }
+
+    private static string FindNeighborBlockText(
+        IReadOnlyList<PreparedPdfPage> pages,
+        int pageIndex,
+        int blockIndex,
+        bool searchBackward,
+        PdfBlockRegion preferredRegion)
+    {
+        var sameRegion = SearchNeighborBlockText(pages, pageIndex, blockIndex, searchBackward, candidate => candidate.Region == preferredRegion);
+        if (!string.IsNullOrWhiteSpace(sameRegion))
+        {
+            return sameRegion;
+        }
+
+        return SearchNeighborBlockText(pages, pageIndex, blockIndex, searchBackward, _ => true);
+    }
+
+    private static string SearchNeighborBlockText(
+        IReadOnlyList<PreparedPdfPage> pages,
+        int pageIndex,
+        int blockIndex,
+        bool searchBackward,
+        Func<PdfTextBlock, bool> predicate)
+    {
+        if (searchBackward)
+        {
+            for (var currentPage = pageIndex; currentPage >= 0; currentPage--)
+            {
+                var startIndex = currentPage == pageIndex ? blockIndex - 1 : pages[currentPage].Blocks.Count - 1;
+                for (var currentBlock = startIndex; currentBlock >= 0; currentBlock--)
+                {
+                    var candidate = pages[currentPage].Blocks[currentBlock];
+                    if (CanUseAsTranslationContext(candidate) && predicate(candidate))
+                    {
+                        return BuildContextPreview(candidate.Text);
+                    }
+                }
+            }
+
+            return string.Empty;
+        }
+
+        for (var currentPage = pageIndex; currentPage < pages.Count; currentPage++)
+        {
+            var startIndex = currentPage == pageIndex ? blockIndex + 1 : 0;
+            for (var currentBlock = startIndex; currentBlock < pages[currentPage].Blocks.Count; currentBlock++)
+            {
+                var candidate = pages[currentPage].Blocks[currentBlock];
+                if (CanUseAsTranslationContext(candidate) && predicate(candidate))
+                {
+                    return BuildContextPreview(candidate.Text);
+                }
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static bool CanUseAsTranslationContext(PdfTextBlock block) =>
+        !string.IsNullOrWhiteSpace(block.Text) &&
+        !IsFormulaLikeBlock(block) &&
+        block.BlockType is not PdfBlockType.HeaderFooter and not PdfBlockType.Footnote &&
+        block.Region is not PdfBlockRegion.Margin;
+
+    private static string DescribeRegion(PdfBlockRegion region) => region switch
+    {
+        PdfBlockRegion.Body => "正文区",
+        PdfBlockRegion.Caption => "图注区",
+        PdfBlockRegion.Table => "表格区",
+        PdfBlockRegion.Margin => "边注区",
+        PdfBlockRegion.HeaderFooter => "页眉页脚区",
+        PdfBlockRegion.Footnote => "脚注区",
+        _ => "正文区"
+    };
+
+    private static string BuildContextPreview(string text)
+    {
+        var normalized = string.Join(" ", text
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        return normalized.Length <= 180 ? normalized : normalized[..180] + "...";
+    }
+
+    private static bool LooksLikeCrossPageContinuation(
+        IReadOnlyList<PreparedPdfPage> pages,
+        int pageIndex,
+        int blockIndex)
+    {
+        var block = pages[pageIndex].Blocks[blockIndex];
+        if (pageIndex > 0 && blockIndex == 0)
+        {
+            var previousPageTail = FindNeighborBlockText(pages, pageIndex, blockIndex, searchBackward: true, block.Region);
+            if (!string.IsNullOrWhiteSpace(previousPageTail) && StartsWithContinuationCue(block.Text))
+            {
+                return true;
+            }
+        }
+
+        if (pageIndex < pages.Count - 1 && blockIndex == pages[pageIndex].Blocks.Count - 1)
+        {
+            var nextPageHead = FindNeighborBlockText(pages, pageIndex, blockIndex, searchBackward: false, block.Region);
+            if (!string.IsNullOrWhiteSpace(nextPageHead) && EndsWithContinuationCue(block.Text))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ShouldUseOcr(Page page, IReadOnlyList<PdfTextBlock> blocks, OcrSettings ocrSettings, int minimumNativeTextWords)
     {
         if (blocks.Count == 0)
         {
@@ -135,8 +880,8 @@ public sealed class PdfDocumentTranslator(
         var pageArea = Math.Max(1, page.Width * page.Height);
         var textCoverage = blocks.Sum(block => Math.Max(1, block.Width) * Math.Max(1, block.Height)) / pageArea;
         var sparseNativeText = nativeWordCount < minimumNativeTextWords * 2 &&
-                               textCoverage < 0.025 &&
-                               blocks.Count <= 3;
+                               textCoverage < ocrSettings.SparseTextCoverageThreshold &&
+                               blocks.Count <= ocrSettings.SparseTextBlockThreshold;
         return sparseNativeText;
     }
 
@@ -144,23 +889,23 @@ public sealed class PdfDocumentTranslator(
     // 文本块检测和边界框计算（优化）
     // ========================================================================
 
-    private static List<PdfTextBlock> BuildTextBlocks(Page page)
+    private static List<PdfTextBlock> BuildTextBlocks(Page page, PdfLayoutHeuristics heuristics)
     {
         var words = page.GetWords()
             .Where(x => !string.IsNullOrWhiteSpace(x.Text))
-            .Where(x => !IsLikelyMarginalNoise(x, page.Width))
+            .Where(x => !IsLikelyMarginalNoise(x, page.Width, heuristics))
             .OrderByDescending(x => x.BoundingBox.Top)
             .ThenBy(x => x.BoundingBox.Left)
             .ToList();
 
         // 第一步：检测多列布局
-        var columns = DetectColumns(words, page.Width);
+        var columns = DetectColumns(words, page.Width, heuristics);
 
         // 第二步：在每列内部构建行和段落块
         var allBlocks = new List<PdfTextBlock>();
         foreach (var columnWords in columns)
         {
-            var columnBlocks = BuildColumnBlocks(columnWords, page.Width);
+            var columnBlocks = BuildColumnBlocks(columnWords, page.Width, heuristics);
             allBlocks.AddRange(columnBlocks);
         }
 
@@ -185,7 +930,7 @@ public sealed class PdfDocumentTranslator(
     /// 检测页面中的多列布局。
     /// 使用单词的水平位置聚类来识别列边界。
     /// </summary>
-    private static List<List<Word>> DetectColumns(IReadOnlyList<Word> words, double pageWidth)
+    private static List<List<Word>> DetectColumns(IReadOnlyList<Word> words, double pageWidth, PdfLayoutHeuristics heuristics)
     {
         if (words.Count < 5)
         {
@@ -200,7 +945,7 @@ public sealed class PdfDocumentTranslator(
 
         // 使用间隙检测法：找到左边距的大间隙作为列分隔
         var gaps = new List<(double Position, double GapWidth)>();
-        var minColumnGap = pageWidth * 0.04; // 列间距至少为页面宽度的4%
+        var minColumnGap = pageWidth * heuristics.ColumnGapRatio;
 
         for (var i = 1; i < leftEdges.Count; i++)
         {
@@ -224,7 +969,7 @@ public sealed class PdfDocumentTranslator(
             var leftWords = words.Where(w => w.BoundingBox.Right < position).ToList();
             var rightWords = words.Where(w => w.BoundingBox.Left > position).ToList();
 
-            if (leftWords.Count < 3 || rightWords.Count < 3)
+            if (leftWords.Count < heuristics.ColumnMinWordsPerSide || rightWords.Count < heuristics.ColumnMinWordsPerSide)
             {
                 continue;
             }
@@ -233,7 +978,8 @@ public sealed class PdfDocumentTranslator(
             var leftVertSpan = leftWords.Max(w => w.BoundingBox.Top) - leftWords.Min(w => w.BoundingBox.Bottom);
             var rightVertSpan = rightWords.Max(w => w.BoundingBox.Top) - rightWords.Min(w => w.BoundingBox.Bottom);
 
-            if (leftVertSpan > pageContentHeight * 0.25 && rightVertSpan > pageContentHeight * 0.25)
+            if (leftVertSpan > pageContentHeight * heuristics.ColumnMinVerticalSpanRatio &&
+                rightVertSpan > pageContentHeight * heuristics.ColumnMinVerticalSpanRatio)
             {
                 columnBoundaries.Add(position);
             }
@@ -276,7 +1022,7 @@ public sealed class PdfDocumentTranslator(
     /// 在单列内部构建文本行和段落块。
     /// 使用基于字形实际尺寸的精确边界框计算。
     /// </summary>
-    private static List<PdfTextBlock> BuildColumnBlocks(List<Word> words, double pageWidth)
+    private static List<PdfTextBlock> BuildColumnBlocks(List<Word> words, double pageWidth, PdfLayoutHeuristics heuristics)
     {
         words = words
             .OrderByDescending(x => x.BoundingBox.Top)
@@ -345,7 +1091,10 @@ public sealed class PdfDocumentTranslator(
                            previous.BlockType == PdfBlockType.Normal ||
                            blockType == PdfBlockType.Normal;
 
-            if (isCloseLine && hasHorizontalRelation && sameType)
+            if (isCloseLine &&
+                hasHorizontalRelation &&
+                sameType &&
+                ShouldMergeLineIntoBlock(previous, lineText, rect, lineHeight, pageWidth, heuristics))
             {
                 blocks[^1] = previous.Merge(lineText, rect, lineHeight, style);
             }
@@ -356,6 +1105,51 @@ public sealed class PdfDocumentTranslator(
         }
 
         return blocks;
+    }
+
+    private static bool ShouldMergeLineIntoBlock(
+        PdfTextBlock previous,
+        string currentLineText,
+        PdfRect currentRect,
+        double currentLineHeight,
+        double pageWidth,
+        PdfLayoutHeuristics heuristics)
+    {
+        if (previous.BlockType is PdfBlockType.TableRow or PdfBlockType.ListItem or PdfBlockType.Code)
+        {
+            return false;
+        }
+
+        var mergeLineHeight = Math.Max(previous.LineHeight, currentLineHeight);
+        var verticalGap = previous.Bottom - currentRect.Top;
+        if (verticalGap < -2 || verticalGap > mergeLineHeight * heuristics.LineMergeMaxVerticalGapRatio)
+        {
+            return false;
+        }
+
+        var previousTrimmed = previous.Text.TrimEnd();
+        var currentTrimmed = currentLineText.TrimStart();
+        var previousEndsSentence = EndsWithSentencePunctuation(previousTrimmed);
+        var currentStartsSentence = StartsWithSentenceCandidate(currentTrimmed);
+        var alignedLeft = Math.Abs(previous.Left - currentRect.Left) < Math.Max(12, mergeLineHeight);
+        var indentChange = currentRect.Left - previous.Left;
+        var notableIndent = indentChange > mergeLineHeight * 0.8;
+        var previousLooksShort = previous.Width < Math.Max(pageWidth * 0.3, currentRect.Width * 0.82);
+
+        if (previousEndsSentence && currentStartsSentence && (notableIndent || previousLooksShort))
+        {
+            return false;
+        }
+
+        if (previousEndsSentence &&
+            alignedLeft &&
+            previousLooksShort &&
+            verticalGap > mergeLineHeight * 0.2)
+        {
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -381,20 +1175,33 @@ public sealed class PdfDocumentTranslator(
             // 对于CJK文字，间距通常较小，不需要额外空格
             var prevEndsWithCjk = prevWord.Text.Length > 0 && IsCjkCharacter(prevWord.Text[^1]);
             var currStartsWithCjk = currWord.Text.Length > 0 && IsCjkCharacter(currWord.Text[0]);
+            var prevEndsWithHyphen = EndsWithHyphen(prevWord.Text);
+            var currStartsWithLowercase = StartsWithLowercaseWord(currWord.Text);
 
-            if (prevEndsWithCjk && currStartsWithCjk)
+            if (prevEndsWithHyphen && currStartsWithLowercase)
             {
-                // CJK之间不加空格
-                result += currWord.Text;
+                result = string.Concat(result.AsSpan(0, TrimTrailingHyphenLength(result)), currWord.Text.TrimStart());
             }
-            else if (gap > avgCharWidth * 2.5)
+            else if (prevEndsWithHyphen)
             {
-                // 大间距可能是特殊分隔
-                result += "  " + currWord.Text;
+                result = string.Concat(result.AsSpan(0, TrimTrailingHyphenLength(result)), currWord.Text);
             }
             else
             {
-                result += " " + currWord.Text;
+                if (prevEndsWithCjk && currStartsWithCjk)
+                {
+                    // CJK之间不加空格
+                    result += currWord.Text;
+                }
+                else if (gap > avgCharWidth * 2.5)
+                {
+                    // 大间距可能是特殊分隔
+                    result += "  " + currWord.Text;
+                }
+                else
+                {
+                    result += " " + currWord.Text;
+                }
             }
         }
 
@@ -662,11 +1469,21 @@ public sealed class PdfDocumentTranslator(
 
     private static IEnumerable<string> GetFontFallbackChain(string family)
     {
-        yield return family;
+        var yielded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var candidate in SplitFontFamilyCandidates(family))
+        {
+            if (yielded.Add(candidate))
+            {
+                yield return candidate;
+            }
+        }
 
         if (!string.Equals(family, PdfSharpFontResolver.DefaultFontFamily, StringComparison.OrdinalIgnoreCase))
         {
-            yield return PdfSharpFontResolver.DefaultFontFamily;
+            if (yielded.Add(PdfSharpFontResolver.DefaultFontFamily))
+            {
+                yield return PdfSharpFontResolver.DefaultFontFamily;
+            }
         }
     }
 
@@ -1328,7 +2145,87 @@ public sealed class PdfDocumentTranslator(
             refined.Add(block.WithBlockType(blockType));
         }
 
-        return refined;
+        return AssignRegions(refined, pageWidth, pageHeight);
+    }
+
+    private static List<PdfTextBlock> AssignRegions(IReadOnlyList<PdfTextBlock> blocks, double pageWidth, double pageHeight)
+    {
+        if (blocks.Count == 0)
+        {
+            return [];
+        }
+
+        var regioned = blocks
+            .Select(block => block.WithRegion(DetectRegion(block, pageWidth, pageHeight)))
+            .ToList();
+
+        for (var i = 0; i < regioned.Count; i++)
+        {
+            var block = regioned[i];
+            if (block.BlockType != PdfBlockType.Caption || block.Region == PdfBlockRegion.Table)
+            {
+                continue;
+            }
+
+            var hasNearbyTable = regioned.Any(other =>
+                other.BlockType == PdfBlockType.TableRow &&
+                Math.Abs(other.CenterY - block.CenterY) < Math.Max(block.LineHeight, other.LineHeight) * 6 &&
+                OverlapRatio(block.Left, block.Right, other.Left, other.Right) > 0.2);
+            if (hasNearbyTable)
+            {
+                regioned[i] = block.WithRegion(PdfBlockRegion.Table);
+            }
+        }
+
+        return regioned;
+    }
+
+    private static PdfBlockRegion DetectRegion(PdfTextBlock block, double pageWidth, double pageHeight)
+    {
+        if (block.BlockType == PdfBlockType.HeaderFooter)
+        {
+            return PdfBlockRegion.HeaderFooter;
+        }
+
+        if (block.BlockType == PdfBlockType.Footnote)
+        {
+            return PdfBlockRegion.Footnote;
+        }
+
+        if (block.BlockType == PdfBlockType.Caption)
+        {
+            return PdfBlockRegion.Caption;
+        }
+
+        if (block.BlockType == PdfBlockType.TableRow)
+        {
+            return PdfBlockRegion.Table;
+        }
+
+        var centerX = (block.Left + block.Right) / 2;
+        var inLeftMargin = centerX < pageWidth * 0.12;
+        var inRightMargin = centerX > pageWidth * 0.88;
+        var narrowBlock = block.Width < pageWidth * 0.22;
+        var shortBlock = block.Text.Trim().Length <= 60;
+        var nearVerticalEdge = block.Top > pageHeight * 0.08 && block.Bottom < pageHeight * 0.92;
+        if ((inLeftMargin || inRightMargin) && narrowBlock && shortBlock && nearVerticalEdge)
+        {
+            return PdfBlockRegion.Margin;
+        }
+
+        return PdfBlockRegion.Body;
+    }
+
+    private static double OverlapRatio(double left1, double right1, double left2, double right2)
+    {
+        var overlap = Math.Min(right1, right2) - Math.Max(left1, left2);
+        if (overlap <= 0)
+        {
+            return 0;
+        }
+
+        var width = Math.Max(1, Math.Min(right1 - left1, right2 - left2));
+        return overlap / width;
     }
 
     private static bool IsCaptionText(string text) =>
@@ -1487,9 +2384,15 @@ public sealed class PdfDocumentTranslator(
             current.BlockType is PdfBlockType.Title or PdfBlockType.Caption or PdfBlockType.HeaderFooter or PdfBlockType.Footnote)
         {
             return previous.BlockType == current.BlockType &&
+                   previous.Region == current.Region &&
                    Math.Abs(previous.Left - current.Left) < Math.Max(previous.LineHeight, current.LineHeight) &&
                    Math.Abs(previous.Right - current.Right) < Math.Max(previous.LineHeight * 1.5, current.LineHeight * 1.5) &&
                    previous.Bottom - current.Top < Math.Max(previous.LineHeight, current.LineHeight) * 1.4;
+        }
+
+        if (previous.Region != current.Region)
+        {
+            return false;
         }
 
         // 代码块之间可以合并
@@ -1503,9 +2406,7 @@ public sealed class PdfDocumentTranslator(
         // 表格行之间可以合并
         if (previous.BlockType == PdfBlockType.TableRow && current.BlockType == PdfBlockType.TableRow)
         {
-            var lineHeight = Math.Max(previous.LineHeight, current.LineHeight);
-            var verticalGap = previous.Bottom - current.Top;
-            return verticalGap >= -2 && verticalGap < lineHeight * 2.0;
+            return false;
         }
 
         // 字体大小差异过大不合并（可能是标题和正文）
@@ -1529,12 +2430,32 @@ public sealed class PdfDocumentTranslator(
         // 垂直间距检查
         var gapLooksContinuous = mergeVerticalGap >= -2 && mergeVerticalGap < mergeLineHeight * 1.5;
 
+        if (sameColumn &&
+            gapLooksContinuous &&
+            EndsWithHyphen(previous.Text) &&
+            StartsWithLowercaseWord(current.Text))
+        {
+            return true;
+        }
+
         // 缩进变化检查（可能是新段落开始）
         var indentChange = Math.Abs(previous.Left - current.Left);
         var significantIndentChange = indentChange > mergeLineHeight * 1.5 && previous.Width < pageWidth * 0.7;
 
         // 如果缩进显著变化，可能是新段落，不合并
         if (significantIndentChange && !alignedLeft)
+        {
+            return false;
+        }
+
+        var previousTrimmed = previous.Text.TrimEnd();
+        var currentTrimmed = current.Text.TrimStart();
+        var previousLooksShort = previous.Width < Math.Max(pageWidth * 0.3, current.Width * 0.82);
+        var currentStartsSentence = StartsWithSentenceCandidate(currentTrimmed);
+
+        if (EndsWithSentencePunctuation(previousTrimmed) &&
+            currentStartsSentence &&
+            (significantIndentChange || previousLooksShort || mergeVerticalGap > mergeLineHeight * 0.25))
         {
             return false;
         }
@@ -1582,7 +2503,7 @@ public sealed class PdfDocumentTranslator(
             return true;
         }
 
-        return paragraphLike && consistentLineHeight;
+        return paragraphLike && consistentLineHeight && continuationEvidence;
     }
 
     private static bool EndsWithSentencePunctuation(string text)
@@ -1635,27 +2556,142 @@ public sealed class PdfDocumentTranslator(
                trimmed.StartsWith("who ", StringComparison.OrdinalIgnoreCase);
     }
 
-    // ========================================================================
-    // 公式检测
-    // ========================================================================
-
-    private static bool IsFormulaLikeBlock(PdfTextBlock block)
+    private static bool StartsWithSentenceCandidate(string text)
     {
-        var text = block.Text.Trim();
         if (string.IsNullOrWhiteSpace(text))
         {
             return false;
         }
 
-        var compact = text.Replace(" ", string.Empty).Replace("\n", string.Empty);
-        if (compact.Length > 160)
+        var trimmed = text.TrimStart();
+        var index = 0;
+        while (index < trimmed.Length && "\"'([{".Contains(trimmed[index]))
+        {
+            index++;
+        }
+
+        if (index >= trimmed.Length)
         {
             return false;
         }
 
+        return char.IsUpper(trimmed[index]) || IsCjkCharacter(trimmed[index]);
+    }
+
+    private static bool StartsWithLowercaseWord(string text)
+    {
+        var trimmed = text.TrimStart();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return false;
+        }
+
+        var index = 0;
+        while (index < trimmed.Length && "\"'([{".Contains(trimmed[index]))
+        {
+            index++;
+        }
+
+        return index < trimmed.Length && char.IsLower(trimmed[index]);
+    }
+
+    private static string GetTrailingAsciiLetters(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return string.Empty;
+        }
+
+        var end = text.Length;
+        while (end > 0 && char.IsWhiteSpace(text[end - 1]))
+        {
+            end--;
+        }
+
+        var start = end;
+        while (start > 0 && IsAsciiLetter(text[start - 1]))
+        {
+            start--;
+        }
+
+        return text[start..end];
+    }
+
+    private static int GetLeadingLowercaseAsciiWordLength(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return 0;
+        }
+
+        var trimmed = text.TrimStart();
+        var index = 0;
+        while (index < trimmed.Length && IsAsciiLower(trimmed[index]))
+        {
+            index++;
+        }
+
+        return index;
+    }
+
+    private static bool EndsWithHyphen(string text) => TrimTrailingHyphenLength(text) < text.Length;
+
+    private static int TrimTrailingHyphenLength(string text)
+    {
+        var end = text.Length;
+        while (end > 0 && char.IsWhiteSpace(text[end - 1]))
+        {
+            end--;
+        }
+
+        if (end > 0 && IsHyphenChar(text[end - 1]))
+        {
+            end--;
+            while (end > 0 && char.IsWhiteSpace(text[end - 1]))
+            {
+                end--;
+            }
+        }
+
+        return end;
+    }
+
+    private static bool IsHyphenChar(char ch) =>
+        ch is '-' or '‐' or '‑' or '‒' or '–' or '﹣' or '－' or '\u00AD';
+
+    private static bool IsAsciiLetter(char ch) => ch is >= 'A' and <= 'Z' or >= 'a' and <= 'z';
+
+    private static bool IsAsciiLower(char ch) => ch is >= 'a' and <= 'z';
+
+    // ========================================================================
+    // 公式检测
+    // ========================================================================
+
+    private static bool IsFormulaLikeBlock(PdfTextBlock block) => AnalyzeFormulaBlock(block.Text).IsPureFormula;
+
+    private static bool ContainsFormulaContent(PdfTextBlock block) => AnalyzeFormulaBlock(block.Text).ContainsFormulaContent;
+
+    private static FormulaBlockAnalysis AnalyzeFormulaBlock(string rawText)
+    {
+        var text = rawText.Trim();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return new FormulaBlockAnalysis(false, false);
+        }
+
+        var compact = text.Replace(" ", string.Empty).Replace("\n", string.Empty);
+        if (compact.Length > 160)
+        {
+            return new FormulaBlockAnalysis(false, false);
+        }
+
         const string mathSpecificSymbols = "∑∫∇√≈≤≥≠≃≅∞∈∉∀∃∂∆∏∝⊂⊃⊆⊇∪∩∧∨⊕⊗";
-        const string genericMathMarkers = "()[]{}=+-*/^_|<>%";
+        const string groupingMarkers = "()[]{}";
+        const string operatorMarkers = "=+*/^_|<>%";
+        const string genericMathMarkers = groupingMarkers + operatorMarkers + "-";
         var mathSpecificCount = compact.Count(ch => mathSpecificSymbols.Contains(ch));
+        var groupingMarkerCount = compact.Count(ch => groupingMarkers.Contains(ch));
+        var operatorMarkerCount = compact.Count(ch => operatorMarkers.Contains(ch));
         var genericMarkerCount = compact.Count(ch => genericMathMarkers.Contains(ch));
         var asciiLetterCount = compact.Count(ch => ch is >= 'A' and <= 'Z' or >= 'a' and <= 'z');
         var digitCount = compact.Count(char.IsDigit);
@@ -1667,34 +2703,147 @@ public sealed class PdfDocumentTranslator(
         var hasMembershipPattern = System.Text.RegularExpressions.Regex.IsMatch(text, @"\b[A-Za-z]\s*[∈∉]\s*[A-Za-z]", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         var hasSubscriptOrSuperscript = System.Text.RegularExpressions.Regex.IsMatch(text, @"\b[A-Za-z]+(?:_\{?\w+\}?|\^\{?[-+]?\w+\}?)");
         var hasSimpleVariableEquation = System.Text.RegularExpressions.Regex.IsMatch(text, @"\b[A-Za-z]\s*[=<>]\s*[-+]?(?:[A-Za-z0-9]|\([^)]+\))");
+        var looksLikeCitation = System.Text.RegularExpressions.Regex.IsMatch(
+            text,
+            @"\b(?:see|table|fig|figure|section|sec|eq|equation|ref|appendix)\b[\s\.:,-]*\(?[\dA-Za-z][\dA-Za-z\.\-]*\)?",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var looksLikeVersion = System.Text.RegularExpressions.Regex.IsMatch(text, @"^[vV]?[\d\.]+[a-z]?$");
         var hasBalancedGrouping = (text.Count(c => c == '(') == text.Count(c => c == ')')) &&
                                   (text.Count(c => c == '[') == text.Count(c => c == ']')) &&
                                   (text.Count(c => c == '{') == text.Count(c => c == '}'));
         var symbolHeavyShortBlock = compact.Length <= 40 && genericMarkerCount >= 2 && symbolRatio >= 0.45;
-        var asciiMathExpression = asciiLetterCount > 0 && digitCount > 0 && genericMarkerCount >= 2 && hasBalancedGrouping;
+        var proseWordCount = System.Text.RegularExpressions.Regex.Matches(text, @"\b[A-Za-z]{2,}\b").Count;
+        var hasProseIndicators = System.Text.RegularExpressions.Regex.IsMatch(
+            text,
+            @"\b(?:the|and|for|are|with|this|that|see|table|fig|figure|section|sec|eq|equation|ref|below|above|where|when|given|then|thus|let)\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var looksLikeProse = proseWordCount >= 2 || hasProseIndicators;
+        var hasSentenceLikeStructure = System.Text.RegularExpressions.Regex.IsMatch(
+            text,
+            @"\b(?:is|are|was|were|be|can|may|shows?|denotes?|represents?)\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var hasDefinitionLeadIn = System.Text.RegularExpressions.Regex.IsMatch(
+            text,
+            @"\b(?:where|when|if|for|given|let|then|thus)\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var hasClausePunctuation = text.Contains(',') || text.Contains('，') || text.Contains(':') || text.Contains('：');
+        var containsFormulaSignal =
+            hasLatexCommand ||
+            hasMembershipPattern ||
+            hasSubscriptOrSuperscript ||
+            hasSimpleVariableEquation ||
+            hasMathKeyword ||
+            mathSpecificCount > 0 ||
+            symbolHeavyShortBlock ||
+            asciiLetterCount > 0 && (operatorMarkerCount >= 1 || groupingMarkerCount >= 2) && digitCount > 0;
 
-        return hasLatexCommand ||
-               hasMembershipPattern ||
-               hasSubscriptOrSuperscript ||
-               (mathSpecificCount > 0 && genericMarkerCount >= 2) ||
-               (hasMathKeyword && genericMarkerCount >= 1) ||
-               (hasSimpleVariableEquation && asciiLetterCount <= 12) ||
-               symbolHeavyShortBlock ||
-               asciiMathExpression;
+        if (looksLikeCitation || looksLikeVersion)
+        {
+            return new FormulaBlockAnalysis(false, containsFormulaSignal);
+        }
+
+        if (compact.Length > 80 && proseWordCount >= 3)
+        {
+            return new FormulaBlockAnalysis(false, containsFormulaSignal);
+        }
+
+        var asciiMathExpression =
+            asciiLetterCount > 0 &&
+            digitCount > 0 &&
+            operatorMarkerCount >= 1 &&
+            groupingMarkerCount >= 2 &&
+            genericMarkerCount >= 3 &&
+            hasBalancedGrouping &&
+            !looksLikeProse &&
+            symbolRatio >= 0.3 &&
+            text.Length <= 60;
+
+        var simpleEquationOnly =
+            hasSimpleVariableEquation &&
+            asciiLetterCount <= 12 &&
+            !looksLikeProse &&
+            !hasSentenceLikeStructure &&
+            !hasDefinitionLeadIn &&
+            text.Length <= 24 &&
+            proseWordCount <= 1 &&
+            digitCount <= 1 &&
+            groupingMarkerCount == 0;
+
+        var proseWithFormula =
+            containsFormulaSignal &&
+            (looksLikeProse || hasSentenceLikeStructure || hasDefinitionLeadIn) &&
+            (proseWordCount >= 2 || hasClausePunctuation || text.Length > 32);
+
+        var pureFormula =
+            !proseWithFormula &&
+            (hasLatexCommand ||
+             hasMembershipPattern ||
+             hasSubscriptOrSuperscript ||
+             (mathSpecificCount > 0 && genericMarkerCount >= 2) ||
+             (hasMathKeyword && genericMarkerCount >= 1 && !looksLikeProse) ||
+             simpleEquationOnly ||
+             symbolHeavyShortBlock ||
+             asciiMathExpression);
+
+        return new FormulaBlockAnalysis(pureFormula, containsFormulaSignal || pureFormula);
     }
+
+    private static PdfLayoutHeuristics BuildLayoutHeuristics(TranslationSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        return new PdfLayoutHeuristics(
+            settings.PdfColumnGapRatio,
+            settings.PdfColumnMinWordsPerSide,
+            settings.PdfColumnMinVerticalSpanRatio,
+            settings.PdfMarginNoiseSideRatio,
+            settings.PdfMarginNoiseVerticalAspectRatio,
+            settings.PdfMarginNoiseShortTokenLength,
+            settings.PdfParagraphGroupingMaxVerticalGapRatio,
+            settings.PdfContinuationMergeMaxVerticalGapRatio,
+            settings.PdfLineMergeMaxVerticalGapRatio,
+            settings.PdfParagraphLeftAlignToleranceRatio,
+            settings.PdfParagraphRightAlignToleranceRatio,
+            settings.PdfParagraphOverlapThreshold,
+            settings.PdfParagraphHorizontalGapRatio,
+            settings.PdfParagraphRangeRelationRatio,
+            settings.PdfParagraphMinWidthRatio,
+            settings.PdfParagraphLooseWrapForwardRatio,
+            settings.PdfParagraphLooseWrapBackwardRatio);
+    }
+
+    private readonly record struct FormulaBlockAnalysis(bool IsPureFormula, bool ContainsFormulaContent);
+    private readonly record struct PdfLayoutHeuristics(
+        double ColumnGapRatio,
+        int ColumnMinWordsPerSide,
+        double ColumnMinVerticalSpanRatio,
+        double MarginNoiseSideRatio,
+        double MarginNoiseVerticalAspectRatio,
+        int MarginNoiseShortTokenLength,
+        double ParagraphGroupingMaxVerticalGapRatio,
+        double ContinuationMergeMaxVerticalGapRatio,
+        double LineMergeMaxVerticalGapRatio,
+        double ParagraphLeftAlignToleranceRatio,
+        double ParagraphRightAlignToleranceRatio,
+        double ParagraphOverlapThreshold,
+        double ParagraphHorizontalGapRatio,
+        double ParagraphRangeRelationRatio,
+        double ParagraphMinWidthRatio,
+        double ParagraphLooseWrapForwardRatio,
+        double ParagraphLooseWrapBackwardRatio);
 
     // ========================================================================
     // 边缘噪声过滤
     // ========================================================================
 
-    private static bool IsLikelyMarginalNoise(Word word, double pageWidth)
+    private static bool IsLikelyMarginalNoise(Word word, double pageWidth, PdfLayoutHeuristics heuristics)
     {
         var boxWidth = Math.Max(1, word.BoundingBox.Right - word.BoundingBox.Left);
         var boxHeight = Math.Max(1, word.BoundingBox.Top - word.BoundingBox.Bottom);
         var centerX = (word.BoundingBox.Left + word.BoundingBox.Right) / 2;
-        var inSideMargin = centerX < pageWidth * 0.1 || centerX > pageWidth * 0.9;
-        var looksVertical = boxHeight > boxWidth * 1.4;
-        var shortToken = word.Text.Trim().Length <= 3;
+        var sideRatio = heuristics.MarginNoiseSideRatio;
+        var inSideMargin = centerX < pageWidth * sideRatio || centerX > pageWidth * (1 - sideRatio);
+        var looksVertical = boxHeight > boxWidth * heuristics.MarginNoiseVerticalAspectRatio;
+        var shortToken = word.Text.Trim().Length <= heuristics.MarginNoiseShortTokenLength;
         var arxivLike = word.Text.Contains("arXiv", StringComparison.OrdinalIgnoreCase) ||
                         word.Text.Contains("[cs.", StringComparison.OrdinalIgnoreCase);
 
@@ -1832,9 +2981,23 @@ public sealed class PdfDocumentTranslator(
             return normalizedBlockFont;
         }
 
-        return string.IsNullOrWhiteSpace(configuredFontFamily)
-            ? PdfSharpFontResolver.DefaultFontFamily
-            : configuredFontFamily;
+        return SplitFontFamilyCandidates(configuredFontFamily).FirstOrDefault()
+            ?? PdfSharpFontResolver.DefaultFontFamily;
+    }
+
+    private static IReadOnlyList<string> SplitFontFamilyCandidates(string? familyNames)
+    {
+        if (string.IsNullOrWhiteSpace(familyNames))
+        {
+            return Array.Empty<string>();
+        }
+
+        return familyNames
+            .Split([',', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(candidate => candidate.Trim().Trim('"', '\''))
+            .Where(candidate => !string.IsNullOrWhiteSpace(candidate))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static string NormalizePdfFontFamily(string? fontName)
@@ -1844,7 +3007,7 @@ public sealed class PdfDocumentTranslator(
             return string.Empty;
         }
 
-        var normalized = fontName.Trim();
+        var normalized = SplitFontFamilyCandidates(fontName).FirstOrDefault() ?? fontName.Trim();
         var plusIndex = normalized.IndexOf('+');
         if (plusIndex > 0 && plusIndex <= 8)
         {
@@ -2045,6 +3208,16 @@ public sealed class PdfDocumentTranslator(
         Footnote
     }
 
+    private enum PdfBlockRegion
+    {
+        Body,
+        Caption,
+        Table,
+        Margin,
+        HeaderFooter,
+        Footnote
+    }
+
     private enum PdfTextSource
     {
         Native,
@@ -2065,7 +3238,8 @@ public sealed class PdfDocumentTranslator(
         XParagraphAlignment Alignment,
         PdfTextStyle Style,
         PdfBlockType BlockType = PdfBlockType.Normal,
-        PdfTextSource Source = PdfTextSource.Native)
+        PdfTextSource Source = PdfTextSource.Native,
+        PdfBlockRegion Region = PdfBlockRegion.Body)
     {
         public double Left => Rect.Left;
         public double Right => Rect.Right;
@@ -2094,6 +3268,10 @@ public sealed class PdfDocumentTranslator(
 
         public PdfTextBlock WithBlockType(PdfBlockType blockType) => this with { BlockType = blockType };
 
+        public PdfTextBlock WithRegion(PdfBlockRegion region) => this with { Region = region };
+
+        public PdfTextBlock WithText(string text) => this with { Text = text };
+
         private static string MergeText(string currentText, string nextLine)
         {
             currentText = currentText.TrimEnd();
@@ -2110,15 +3288,34 @@ public sealed class PdfDocumentTranslator(
             }
 
             return EndsWithHyphen(currentText)
-                ? string.Concat(currentText.AsSpan(0, currentText.Length - 1), nextLine)
+                ? string.Concat(currentText.AsSpan(0, TrimTrailingHyphenLength(currentText)), nextLine)
                 : $"{currentText} {nextLine}";
         }
 
-        private static bool EndsWithHyphen(string text) =>
-            text.EndsWith('-') ||
-            text.EndsWith('‐') ||
-            text.EndsWith('‑') ||
-            text.EndsWith('‒');
+        private static bool EndsWithHyphen(string text) => TrimTrailingHyphenLength(text) < text.Length;
+
+        private static int TrimTrailingHyphenLength(string text)
+        {
+            var end = text.Length;
+            while (end > 0 && char.IsWhiteSpace(text[end - 1]))
+            {
+                end--;
+            }
+
+            if (end > 0 && IsHyphenChar(text[end - 1]))
+            {
+                end--;
+                while (end > 0 && char.IsWhiteSpace(text[end - 1]))
+                {
+                    end--;
+                }
+            }
+
+            return end;
+        }
+
+        private static bool IsHyphenChar(char ch) =>
+            ch is '-' or '‐' or '‑' or '‒' or '–' or '﹣' or '－' or '\u00AD';
 
         private static PdfTextStyle ChooseStyle(PdfTextStyle current, PdfTextStyle next)
         {
@@ -2137,6 +3334,25 @@ public sealed class PdfDocumentTranslator(
     }
 
     private sealed record PdfTextStyle(string FontFamily, double PointSize, XColor Color, bool IsBold, bool IsItalic);
+
+    private sealed record PreparedPdfPage(int PageIndex, IReadOnlyList<PdfTextBlock> Blocks);
+
+    private sealed record PdfTranslationTarget(
+        int BlockIndex,
+        int Order,
+        string Joiner,
+        string OriginalText);
+
+    private sealed record PdfTranslatedTarget(
+        int BlockIndex,
+        int Order,
+        string Text,
+        string Joiner);
+
+    private sealed record PdfTranslationUnit(
+        IReadOnlyList<PdfTranslationTarget> Targets,
+        int ContextBlockIndex,
+        string SourceText);
 
     private sealed record PdfTextLayout(XFont Font, IReadOnlyList<string> Lines, double LineHeightRatio, bool Fits);
 

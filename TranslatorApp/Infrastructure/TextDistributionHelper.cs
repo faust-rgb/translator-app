@@ -35,8 +35,19 @@ public static class TextDistributionHelper
         }
 
         // 计算目标长度比例
-        var totalWeight = Math.Max(1, weights.Sum(x => Math.Max(1, x)));
-        var targetLengths = weights.Select(w => translatedText.Length * (Math.Max(1, w) / (double)totalWeight)).ToList();
+        var normalizedWeights = new int[weights.Count];
+        var totalWeight = 0;
+        for (var i = 0; i < weights.Count; i++)
+        {
+            var normalizedWeight = Math.Max(1, weights[i]);
+            normalizedWeights[i] = normalizedWeight;
+            totalWeight += normalizedWeight;
+        }
+
+        totalWeight = Math.Max(1, totalWeight);
+        var targetLengths = normalizedWeights
+            .Select(weight => translatedText.Length * (weight / (double)totalWeight))
+            .ToList();
 
         // 使用语义边界感知算法分割文本
         var segments = SplitBySemanticBoundaries(translatedText, targetLengths);
@@ -54,7 +65,6 @@ public static class TextDistributionHelper
     private static IReadOnlyList<string> SplitBySemanticBoundaries(string text, IReadOnlyList<double> targetLengths)
     {
         var segments = new List<string>();
-        var remainingText = text;
         var startIndex = 0;
 
         for (var i = 0; i < targetLengths.Count - 1; i++)

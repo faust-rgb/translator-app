@@ -1,4 +1,5 @@
 using System.IO;
+using System.Threading;
 using TranslatorApp.Configuration;
 using TranslatorApp.Infrastructure;
 using TranslatorApp.Models;
@@ -15,6 +16,7 @@ public abstract class DocumentTranslatorBase(ITextTranslationService textTransla
     protected async Task<string> TranslateBlockAsync(
         string text,
         string contextHint,
+        string additionalRequirements,
         AppSettings settings,
         PauseController pauseController,
         Func<string, Task>? onPartialResponse,
@@ -28,7 +30,7 @@ public abstract class DocumentTranslatorBase(ITextTranslationService textTransla
             return text;
         }
 
-        return await textTranslationService.TranslateAsync(text, contextHint, settings, onPartialResponse, cancellationToken);
+        return await textTranslationService.TranslateAsync(text, contextHint, additionalRequirements, settings, onPartialResponse, cancellationToken);
     }
 
     protected async Task<IReadOnlyList<string>> TranslateBatchAsync(
@@ -52,6 +54,7 @@ public abstract class DocumentTranslatorBase(ITextTranslationService textTransla
                 results[i] = await TranslateBlockAsync(
                     blocks[i].Text,
                     blocks[i].ContextHint,
+                    blocks[i].AdditionalRequirements,
                     settings,
                     pauseController,
                     onPartialResponse,
@@ -62,8 +65,7 @@ public abstract class DocumentTranslatorBase(ITextTranslationService textTransla
         }
 
         using var semaphore = new SemaphoreSlim(maxConcurrency);
-        var previewGate = new object();
-        var previewAssigned = false;
+        var previewAssigned = 0;
 
         var tasks = blocks.Select(async (block, index) =>
         {
@@ -71,21 +73,16 @@ public abstract class DocumentTranslatorBase(ITextTranslationService textTransla
             try
             {
                 Func<string, Task>? partialCallback = null;
-                if (onPartialResponse is not null)
+                if (onPartialResponse is not null &&
+                    Interlocked.CompareExchange(ref previewAssigned, 1, 0) == 0)
                 {
-                    lock (previewGate)
-                    {
-                        if (!previewAssigned)
-                        {
-                            previewAssigned = true;
-                            partialCallback = onPartialResponse;
-                        }
-                    }
+                    partialCallback = onPartialResponse;
                 }
 
                 results[index] = await TranslateBlockAsync(
                     block.Text,
                     block.ContextHint,
+                    block.AdditionalRequirements,
                     settings,
                     pauseController,
                     partialCallback,
@@ -101,10 +98,12 @@ public abstract class DocumentTranslatorBase(ITextTranslationService textTransla
         return results;
     }
 
-    protected static string BuildOutputPath(string sourcePath, string outputDirectory)
+    protected static string BuildOutputPath(string sourcePath, string outputDirectory, string? outputExtension = null)
     {
         var fileName = Path.GetFileNameWithoutExtension(sourcePath);
-        var extension = Path.GetExtension(sourcePath);
+        var extension = string.IsNullOrWhiteSpace(outputExtension)
+            ? Path.GetExtension(sourcePath)
+            : outputExtension;
         var directory = string.IsNullOrWhiteSpace(outputDirectory)
             ? Path.GetDirectoryName(sourcePath)!
             : outputDirectory;
@@ -118,5 +117,26 @@ public abstract class DocumentTranslatorBase(ITextTranslationService textTransla
     protected static int GetBlockTranslationConcurrency(AppSettings settings) =>
         Math.Max(1, settings.Translation.MaxParallelBlocks);
 
-    protected readonly record struct TranslationBlock(string Text, string ContextHint);
+    protected static (int Start, int End) GetRequestedRange(AppSettings settings, int totalUnits)
+    {
+        totalUnits = Math.Max(0, totalUnits);
+        if (totalUnits == 0)
+        {
+            return (1, 0);
+        }
+
+        var start = Math.Max(1, settings.Translation.RangeStart);
+        var end = settings.Translation.RangeEnd <= 0 ? totalUnits : Math.Max(start, settings.Translation.RangeEnd);
+        start = Math.Min(start, totalUnits);
+        end = Math.Min(end, totalUnits);
+        return (start, end);
+    }
+
+    protected static bool IsWithinRequestedRange(int oneBasedIndex, (int Start, int End) range) =>
+        range.End >= range.Start && oneBasedIndex >= range.Start && oneBasedIndex <= range.End;
+
+    protected static string DescribeRequestedRange(string unitName, (int Start, int End) range) =>
+        range.End < range.Start ? $"未命中任何{unitName}" : $"{unitName} {range.Start}-{range.End}";
+
+    protected readonly record struct TranslationBlock(string Text, string ContextHint, string AdditionalRequirements = "");
 }

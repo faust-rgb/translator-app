@@ -28,34 +28,34 @@ public sealed class ExcelDocumentTranslator(
         using var document = SpreadsheetDocument.Open(outputPath, true);
         var workbookPart = document.WorkbookPart ?? throw new InvalidOperationException("Excel 文件无效。");
         var bilingualSegments = new List<BilingualSegment>();
-
-        var items = new List<ExcelTranslationItem>();
-
-        if (workbookPart.SharedStringTablePart?.SharedStringTable is { } sharedTable)
-        {
-            foreach (var item in sharedTable.Elements<SharedStringItem>())
+        var workbook = workbookPart.Workbook ?? throw new InvalidOperationException("Excel 工作簿无效。");
+        var sheetInfos = workbook.Sheets?.Elements<Sheet>()
+            .Select((sheet, index) => new
             {
-                var runs = item
-                    .Elements<Run>()
-                    .Select(CreateRunInfo)
-                    .Where(x => x is not null)
-                    .Cast<ExcelRunInfo>()
-                    .ToList();
-                if (runs.Count == 0)
-                {
-                    continue;
-                }
+                Sheet = sheet,
+                SheetIndex = index + 1,
+                WorksheetPart = (WorksheetPart?)workbookPart.GetPartById(sheet.Id!)
+            })
+            .Where(x => x.WorksheetPart is not null)
+            .ToList() ?? [];
+        var requestedRange = GetRequestedRange(context.Settings, sheetInfos.Count);
+        var items = new List<ExcelTranslationItem>();
+        var selectedSharedStringIndices = new HashSet<int>();
 
-                items.Add(new ExcelTranslationItem("Excel 共享字符串", string.Concat(runs.Select(x => x.Original)), runs));
-            }
-        }
-
-        foreach (var worksheetPart in workbookPart.WorksheetParts)
+        foreach (var sheetInfo in sheetInfos.Where(x => IsWithinRequestedRange(x.SheetIndex, requestedRange)))
         {
-            var worksheet = worksheetPart.Worksheet;
+            var worksheet = sheetInfo.WorksheetPart!.Worksheet;
             if (worksheet is null)
             {
                 continue;
+            }
+
+            foreach (var cell in worksheet.Descendants<Cell>().Where(x => x.DataType?.Value == CellValues.SharedString))
+            {
+                if (int.TryParse(cell.CellValue?.Text, out var sharedStringIndex))
+                {
+                    selectedSharedStringIndices.Add(sharedStringIndex);
+                }
             }
 
             foreach (var cell in worksheet.Descendants<Cell>().Where(x => x.DataType?.Value == CellValues.InlineString))
@@ -71,7 +71,32 @@ public sealed class ExcelDocumentTranslator(
                     continue;
                 }
 
-                items.Add(new ExcelTranslationItem("Excel 行内文本", string.Concat(runs.Select(x => x.Original)), runs));
+                items.Add(new ExcelTranslationItem($"Excel 工作表 {sheetInfo.SheetIndex} 行内文本", string.Concat(runs.Select(x => x.Original)), runs));
+            }
+        }
+
+        if (workbookPart.SharedStringTablePart?.SharedStringTable is { } sharedTable)
+        {
+            foreach (var sharedStringIndex in selectedSharedStringIndices.OrderBy(x => x))
+            {
+                var item = sharedTable.Elements<SharedStringItem>().ElementAtOrDefault(sharedStringIndex);
+                if (item is null)
+                {
+                    continue;
+                }
+
+                var runs = item
+                    .Elements<Run>()
+                    .Select(CreateRunInfo)
+                    .Where(x => x is not null)
+                    .Cast<ExcelRunInfo>()
+                    .ToList();
+                if (runs.Count == 0)
+                {
+                    continue;
+                }
+
+                items.Add(new ExcelTranslationItem("Excel 共享字符串", string.Concat(runs.Select(x => x.Original)), runs));
             }
         }
 
@@ -97,10 +122,12 @@ public sealed class ExcelDocumentTranslator(
                 var translated = translatedBatch[batchIndex];
                 bilingualSegments.Add(new BilingualSegment(item.ContextHint, item.Original, translated));
 
-                var segments = TextDistributionHelper.Distribute(translated, item.Runs.Select(x => Math.Max(1, x.Original.Length)).ToList());
-                for (var i = 0; i < item.Runs.Count; i++)
+                var formatGroups = FormattedTextRunHelper.GroupAdjacentRunsByFormat(
+                    item.Runs.Select(run => new FormattedTextRun<Text>(run.Texts, run.Original, run.FormatKey)).ToList());
+                var segments = FormattedTextRunHelper.DistributeAcrossGroups(translated, formatGroups);
+                for (var i = 0; i < formatGroups.Count; i++)
                 {
-                    ApplySegmentToTexts(item.Runs[i].Texts, segments[i]);
+                    ApplySegmentToTexts(formatGroups[i].Texts, segments[i]);
                 }
 
                 var absoluteIndex = batchStart + batchIndex;
@@ -132,8 +159,14 @@ public sealed class ExcelDocumentTranslator(
             return null;
         }
 
-        return new ExcelRunInfo(texts, string.Concat(texts.Select(x => x.Text)));
+        return new ExcelRunInfo(
+            texts,
+            string.Concat(texts.Select(x => x.Text)),
+            GetFormatKey(run));
     }
+
+    private static string GetFormatKey(Run run) =>
+        run.GetFirstChild<RunProperties>()?.OuterXml ?? string.Empty;
 
     private static void ApplySegmentToTexts(IReadOnlyList<Text> texts, string segment)
     {
@@ -144,8 +177,8 @@ public sealed class ExcelDocumentTranslator(
 
         // 保留原始首尾空格信息
         var originalFirstText = texts[0].Text ?? string.Empty;
-        var leadingSpace = GetLeadingWhitespace(originalFirstText);
-        var trailingSpace = GetTrailingWhitespace(texts[^1].Text ?? string.Empty);
+        var leadingSpace = WhitespacePreservationHelper.GetLeadingWhitespace(originalFirstText);
+        var trailingSpace = WhitespacePreservationHelper.GetTrailingWhitespace(texts[^1].Text ?? string.Empty);
 
         // 应用译文，保留空格
         var processedSegment = leadingSpace + segment.Trim() + trailingSpace;
@@ -160,38 +193,6 @@ public sealed class ExcelDocumentTranslator(
         }
     }
 
-    private static string GetLeadingWhitespace(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-        {
-            return string.Empty;
-        }
-
-        var index = 0;
-        while (index < text.Length && char.IsWhiteSpace(text[index]))
-        {
-            index++;
-        }
-
-        return text[..index];
-    }
-
-    private static string GetTrailingWhitespace(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-        {
-            return string.Empty;
-        }
-
-        var index = text.Length - 1;
-        while (index >= 0 && char.IsWhiteSpace(text[index]))
-        {
-            index--;
-        }
-
-        return text[(index + 1)..];
-    }
-
     private sealed record ExcelTranslationItem(string ContextHint, string Original, IReadOnlyList<ExcelRunInfo> Runs);
-    private sealed record ExcelRunInfo(IReadOnlyList<Text> Texts, string Original);
+    private sealed record ExcelRunInfo(IReadOnlyList<Text> Texts, string Original, string FormatKey);
 }

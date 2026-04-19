@@ -9,9 +9,14 @@ public sealed class TranslationRequestThrottle : ITranslationRequestThrottle
 
     public Task<IAsyncDisposable> AcquireAsync(int maxConcurrency, CancellationToken cancellationToken)
     {
+        if (maxConcurrency <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxConcurrency), maxConcurrency, "并发数必须大于 0。");
+        }
+
         lock (_syncRoot)
         {
-            _maxConcurrency = Math.Max(1, maxConcurrency);
+            _maxConcurrency = maxConcurrency;
             if (_currentConcurrency < _maxConcurrency)
             {
                 _currentConcurrency++;

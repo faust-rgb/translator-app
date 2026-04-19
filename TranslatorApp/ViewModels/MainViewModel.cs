@@ -57,6 +57,18 @@ public partial class MainViewModel : ObservableObject
     private string outputDirectory = string.Empty;
 
     [ObservableProperty]
+    private int rangeStart = 1;
+
+    [ObservableProperty]
+    private int rangeEnd;
+
+    [ObservableProperty]
+    private string ebookOutputFormat = "EPUB";
+
+    [ObservableProperty]
+    private string calibreExecutablePath = string.Empty;
+
+    [ObservableProperty]
     private string outputFontFamily = PdfSharpFontResolver.DefaultFontFamily;
 
     [ObservableProperty]
@@ -124,6 +136,17 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private DocumentTranslationItem? selectedDocument;
 
+    public string TranslationRangeHint =>
+        SelectedDocument?.FileType.ToUpperInvariant() switch
+        {
+            "PDF" => "当前文档按原文页范围处理。",
+            "PPTX" => "当前文档按原文幻灯片范围处理。",
+            "XLSX" => "当前文档按原文工作表范围处理。",
+            "DOCX" => "当前文档按近似原文页范围处理，依据分页符、分页锚点与分节换页估算。",
+            "EPUB" or "MOBI" or "AZW3" => "当前电子书按章节文档范围处理，不使用阅读器动态页码。",
+            _ => "PDF 按页、PPT 按幻灯片、Excel 按工作表、EPUB 按章节文档、Word 按近似分页范围处理。"
+        };
+
     public ObservableCollection<DocumentTranslationItem> Documents { get; } = [];
     public ObservableCollection<TranslationHistoryRecord> HistoryItems { get; } = [];
     public IReadOnlyList<string> CommonLanguages { get; } =
@@ -146,6 +169,12 @@ public partial class MainViewModel : ObservableObject
         "印尼语",
         "土耳其语",
         "印地语"
+    ];
+
+    public IReadOnlyList<string> EbookOutputFormats { get; } =
+    [
+        "EPUB",
+        "DOCX"
     ];
 
     partial void OnTemperatureChanged(double value)
@@ -211,6 +240,27 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
+    partial void OnRangeStartChanged(int value)
+    {
+        var clamped = Math.Max(1, value);
+        if (clamped != value)
+        {
+            rangeStart = clamped;
+        }
+    }
+
+    partial void OnRangeEndChanged(int value)
+    {
+        var clamped = Math.Max(0, value);
+        if (clamped != value)
+        {
+            rangeEnd = clamped;
+        }
+    }
+
+    partial void OnSelectedDocumentChanged(DocumentTranslationItem? value) =>
+        OnPropertyChanged(nameof(TranslationRangeHint));
+
     public MainViewModel(
         ISettingsService settingsService,
         IDocumentTranslationCoordinator coordinator,
@@ -251,6 +301,10 @@ public partial class MainViewModel : ObservableObject
         SourceLanguage = settings.Translation.SourceLanguage;
         TargetLanguage = settings.Translation.TargetLanguage;
         OutputDirectory = settings.Translation.OutputDirectory;
+        RangeStart = Math.Max(1, settings.Translation.RangeStart);
+        RangeEnd = Math.Max(0, settings.Translation.RangeEnd);
+        EbookOutputFormat = NormalizeEbookOutputFormat(settings.Translation.EbookOutputFormat);
+        CalibreExecutablePath = settings.Translation.CalibreExecutablePath;
         OutputFontFamily = settings.Translation.OutputFontFamily;
         OutputFontSize = settings.Translation.OutputFontSize;
         MaxParallelDocuments = settings.Translation.MaxParallelDocuments;
@@ -308,7 +362,7 @@ public partial class MainViewModel : ObservableObject
         var dialog = new OpenFileDialog
         {
             Multiselect = true,
-            Filter = "支持的文档|*.docx;*.xlsx;*.pptx;*.pdf|全部文件|*.*"
+            Filter = "支持的文档|*.docx;*.xlsx;*.pptx;*.pdf;*.epub;*.mobi;*.azw3|全部文件|*.*"
         };
 
         if (dialog.ShowDialog() != true)
@@ -420,6 +474,21 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand]
+    private void PickCalibreExecutable()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Filter = "Calibre 转换器|ebook-convert.exe|可执行文件|*.exe|全部文件|*.*",
+            FileName = string.IsNullOrWhiteSpace(CalibreExecutablePath) ? "ebook-convert.exe" : Path.GetFileName(CalibreExecutablePath)
+        };
+
+        if (dialog.ShowDialog() == true)
+        {
+            CalibreExecutablePath = dialog.FileName;
+        }
+    }
+
+    [RelayCommand]
     private void PickGlossaryFile()
     {
         var dialog = new OpenFileDialog
@@ -463,6 +532,29 @@ public partial class MainViewModel : ObservableObject
             Model = settings.Ai.Model;
             BaseUrl = settings.Ai.BaseUrl;
             ApiKey = settings.Ai.ApiKey;
+            AnthropicVersion = settings.Ai.AnthropicVersion;
+            CustomHeaders = settings.Ai.CustomHeaders;
+            Temperature = settings.Ai.Temperature;
+            MaxTokens = settings.Ai.MaxTokens;
+            SourceLanguage = settings.Translation.SourceLanguage;
+            TargetLanguage = settings.Translation.TargetLanguage;
+            OutputDirectory = settings.Translation.OutputDirectory;
+            RangeStart = Math.Max(1, settings.Translation.RangeStart);
+            RangeEnd = Math.Max(0, settings.Translation.RangeEnd);
+            EbookOutputFormat = NormalizeEbookOutputFormat(settings.Translation.EbookOutputFormat);
+            CalibreExecutablePath = settings.Translation.CalibreExecutablePath;
+            OutputFontFamily = settings.Translation.OutputFontFamily;
+            OutputFontSize = settings.Translation.OutputFontSize;
+            MaxParallelDocuments = settings.Translation.MaxParallelDocuments;
+            MaxParallelBlocks = settings.Translation.MaxParallelBlocks;
+            MaxGlobalTranslationRequests = settings.Translation.MaxGlobalTranslationRequests;
+            GlossaryPath = settings.Translation.GlossaryPath;
+            ExportBilingualDocument = settings.Translation.ExportBilingualDocument;
+            EnableStreaming = settings.Translation.EnableStreaming;
+            RetryCount = settings.Translation.RetryCount;
+            EnableOcrForScannedPdf = settings.Ocr.EnableOcrForScannedPdf;
+            TesseractDataPath = settings.Ocr.TesseractDataPath;
+            OcrLanguage = settings.Ocr.Language;
             _logService.Info($"已加载配置文件：{Path.GetFileName(dialog.FileName)}");
         }
         catch (Exception ex)
@@ -648,6 +740,12 @@ public partial class MainViewModel : ObservableObject
             }
         }
 
+        if (SelectedDocument is null)
+        {
+            SelectedDocument = Documents.FirstOrDefault();
+        }
+
+        OnPropertyChanged(nameof(TranslationRangeHint));
         RefreshOverallProgress();
     }
 
@@ -683,6 +781,10 @@ public partial class MainViewModel : ObservableObject
                 SourceLanguage = SourceLanguage,
                 TargetLanguage = TargetLanguage,
                 OutputDirectory = OutputDirectory,
+                RangeStart = Math.Max(1, RangeStart),
+                RangeEnd = Math.Max(0, RangeEnd),
+                EbookOutputFormat = NormalizeEbookOutputFormat(EbookOutputFormat),
+                CalibreExecutablePath = CalibreExecutablePath,
                 OutputFontFamily = OutputFontFamily,
                 OutputFontSize = Math.Clamp(OutputFontSize, 6, 72),
                 MaxParallelDocuments = Math.Max(1, MaxParallelDocuments),
@@ -758,4 +860,7 @@ public partial class MainViewModel : ObservableObject
 
         return text[^maxCharacters..];
     }
+
+    private static string NormalizeEbookOutputFormat(string? value) =>
+        string.Equals(value, "DOCX", StringComparison.OrdinalIgnoreCase) ? "DOCX" : "EPUB";
 }

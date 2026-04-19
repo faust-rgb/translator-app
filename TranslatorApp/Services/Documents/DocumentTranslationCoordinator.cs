@@ -17,6 +17,9 @@ public sealed class DocumentTranslationCoordinator(
 
     public async Task RunAsync(ObservableCollection<DocumentTranslationItem> items, AppSettings settings, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(items);
+        ArgumentNullException.ThrowIfNull(settings);
+
         var maxParallel = Math.Max(1, settings.Translation.MaxParallelDocuments);
         using var semaphore = new SemaphoreSlim(maxParallel);
 
@@ -40,8 +43,14 @@ public sealed class DocumentTranslationCoordinator(
 
     private async Task TranslateSingleAsync(DocumentTranslationItem item, AppSettings settings, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(item);
+        ArgumentNullException.ThrowIfNull(settings);
+
         var startedAt = DateTime.UtcNow;
         var checkpoint = await recoveryStateService.GetCheckpointAsync(item.SourcePath);
+        var latestUnitIndex = checkpoint?.UnitIndex ?? 0;
+        var latestSubUnitIndex = checkpoint?.SubUnitIndex ?? 0;
+        var latestProgressText = checkpoint?.ProgressText ?? string.Empty;
         var extension = Path.GetExtension(item.SourcePath).ToLowerInvariant();
         var translator = translators.FirstOrDefault(x => x.CanHandle(extension));
         if (translator is null)
@@ -104,14 +113,14 @@ public sealed class DocumentTranslationCoordinator(
                 }),
                 SaveCheckpointAsync = (unitIndex, subUnitIndex, text) => recoveryStateService.SaveCheckpointAsync(new DocumentCheckpoint
                 {
+                    UnitIndex = latestUnitIndex = unitIndex,
+                    SubUnitIndex = latestSubUnitIndex = subUnitIndex,
                     SourcePath = item.SourcePath,
                     OutputPath = item.OutputPath,
                     FileType = item.FileType,
                     Status = PauseController.IsPaused ? nameof(DocumentStatus.Paused) : nameof(DocumentStatus.Running),
                     Progress = item.Progress,
-                    ProgressText = text,
-                    UnitIndex = unitIndex,
-                    SubUnitIndex = subUnitIndex,
+                    ProgressText = latestProgressText = text,
                     ErrorMessage = item.ErrorMessage,
                     UpdatedAt = DateTime.UtcNow
                 })
@@ -144,9 +153,9 @@ public sealed class DocumentTranslationCoordinator(
                 FileType = item.FileType,
                 Status = nameof(DocumentStatus.Stopped),
                 Progress = item.Progress,
-                ProgressText = item.ProgressText,
-                UnitIndex = checkpoint?.UnitIndex ?? 0,
-                SubUnitIndex = checkpoint?.SubUnitIndex ?? 0,
+                ProgressText = string.IsNullOrWhiteSpace(item.ProgressText) ? latestProgressText : item.ProgressText,
+                UnitIndex = latestUnitIndex,
+                SubUnitIndex = latestSubUnitIndex,
                 ErrorMessage = item.ErrorMessage,
                 UpdatedAt = DateTime.UtcNow
             });
@@ -168,9 +177,9 @@ public sealed class DocumentTranslationCoordinator(
                 FileType = item.FileType,
                 Status = nameof(DocumentStatus.Failed),
                 Progress = item.Progress,
-                ProgressText = item.ProgressText,
-                UnitIndex = checkpoint?.UnitIndex ?? 0,
-                SubUnitIndex = checkpoint?.SubUnitIndex ?? 0,
+                ProgressText = string.IsNullOrWhiteSpace(item.ProgressText) ? latestProgressText : item.ProgressText,
+                UnitIndex = latestUnitIndex,
+                SubUnitIndex = latestSubUnitIndex,
                 ErrorMessage = item.ErrorMessage,
                 UpdatedAt = DateTime.UtcNow
             });
