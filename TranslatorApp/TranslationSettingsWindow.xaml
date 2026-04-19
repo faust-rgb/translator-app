@@ -72,8 +72,12 @@
                           Text="{Binding EbookOutputFormat, UpdateSourceTrigger=PropertyChanged}" />
                 <CheckBox Margin="0,0,0,6" IsChecked="{Binding EnableStreaming}" Content="启用流式预览" />
                 <CheckBox Margin="0,0,0,6" IsChecked="{Binding ExportBilingualDocument}" Content="导出双语 DOCX" />
-                <TextBlock Style="{StaticResource SectionLabelStyle}" Text="失败重试次数" />
-                <TextBox Style="{StaticResource CompactTextBoxStyle}" Text="{Binding RetryCount, UpdateSourceTrigger=PropertyChanged}" />
+                <TextBlock Style="{StaticResource SectionLabelStyle}" Text="请求超时秒数" />
+                <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding RequestTimeoutSeconds, UpdateSourceTrigger=PropertyChanged}" />
+                <TextBlock Style="{StaticResource SectionLabelStyle}" Text="超时重试次数" />
+                <TextBox Style="{StaticResource CompactTextBoxStyle}" Margin="0,0,0,6" Text="{Binding TimeoutRetryCount, UpdateSourceTrigger=PropertyChanged}" />
+                <TextBlock Style="{StaticResource SectionLabelStyle}" Text="服务异常重试次数" />
+                <TextBox Style="{StaticResource CompactTextBoxStyle}" Text="{Binding ServerErrorRetryCount, UpdateSourceTrigger=PropertyChanged}" />
             </StackPanel>
 
             <StackPanel Grid.Column="1" Margin="0,0,12,0">

@@ -357,16 +357,19 @@
                                Text="{Binding StreamPreviewText}" />
                 </ScrollViewer>
 
-                <ScrollViewer Grid.Row="1"
-                              Grid.Column="1"
-                              Margin="8,6,8,0"
-                              HorizontalScrollBarVisibility="Auto"
-                              VerticalScrollBarVisibility="Visible">
-                    <TextBlock FontFamily="Consolas"
-                               FontSize="12"
-                               TextWrapping="Wrap"
-                               Text="{Binding LogText}" />
-                </ScrollViewer>
+                <TextBox Grid.Row="1"
+                         Grid.Column="1"
+                         x:Name="LogTextBox"
+                         Margin="8,6,8,0"
+                         FontFamily="Consolas"
+                         FontSize="12"
+                         IsReadOnly="True"
+                         AcceptsReturn="True"
+                         TextWrapping="Wrap"
+                         HorizontalScrollBarVisibility="Disabled"
+                         VerticalScrollBarVisibility="Auto"
+                         TextChanged="LogTextBox_TextChanged"
+                         Text="{Binding LogText}" />
 
                 <DataGrid Grid.Row="1"
                           Grid.Column="2"
