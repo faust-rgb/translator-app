@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using TranslatorApp.Configuration;
 using TranslatorApp.Models;
 using TranslatorApp.Services.Ai;
@@ -12,6 +13,7 @@ public sealed class TextTranslationService(
     IAppLogService logService,
     ITranslationRequestThrottle translationRequestThrottle) : ITextTranslationService
 {
+    private readonly ConcurrentDictionary<string, Lazy<Task<string>>> _translationCache = new(StringComparer.Ordinal);
     private static readonly Regex UrlRegex = new(@"https?://\S+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex EmailRegex = new(@"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex DoiRegex = new(@"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -51,6 +53,31 @@ public sealed class TextTranslationService(
             OnPartialResponse = onPartialResponse
         };
 
+        var cacheKey = BuildCacheKey(settings, request);
+        var lazyTranslation = _translationCache.GetOrAdd(
+            cacheKey,
+            _ => new Lazy<Task<string>>(
+                () => TranslateCoreAsync(text, protectedText, request, settings, cancellationToken),
+                LazyThreadSafetyMode.ExecutionAndPublication));
+
+        try
+        {
+            return await lazyTranslation.Value;
+        }
+        catch
+        {
+            _translationCache.TryRemove(cacheKey, out _);
+            throw;
+        }
+    }
+
+    private async Task<string> TranslateCoreAsync(
+        string originalText,
+        ProtectedText protectedText,
+        TranslationRequest request,
+        AppSettings settings,
+        CancellationToken cancellationToken)
+    {
         var serverErrorRetryCount = ResolveServerErrorRetryCount(settings.Translation);
         var timeoutRetryCount = Math.Max(0, settings.Translation.TimeoutRetryCount);
         var exceptions = new List<ExceptionDispatchInfo>();
@@ -67,7 +94,7 @@ public sealed class TextTranslationService(
                     cancellationToken);
                 var rawTranslated = await client.TranslateAsync(request, cancellationToken);
                 var translated = protectedText.Restore(rawTranslated);
-                if (ShouldRetryForQuality(text, translated, rawTranslated, request.AdditionalRequirements, protectedText))
+                if (ShouldRetryForQuality(originalText, translated, rawTranslated, request.AdditionalRequirements, protectedText))
                 {
                     client = clientFactory.Create(settings.Ai);
                     var retryRequest = new TranslationRequest
@@ -123,6 +150,19 @@ public sealed class TextTranslationService(
             $"翻译在 {exceptions.Count} 次尝试后仍失败。",
             exceptions.Select(x => x.SourceException));
     }
+
+    private static string BuildCacheKey(AppSettings settings, TranslationRequest request) =>
+        string.Join(
+            "\u001F",
+            settings.Ai.ProviderType,
+            settings.Ai.BaseUrl ?? string.Empty,
+            settings.Ai.Model ?? string.Empty,
+            request.SourceLanguage ?? string.Empty,
+            request.TargetLanguage ?? string.Empty,
+            request.Text ?? string.Empty,
+            request.GlossaryPrompt ?? string.Empty,
+            request.AdditionalRequirements ?? string.Empty,
+            request.PromptTemplate ?? string.Empty);
 
     private static bool ShouldRetryForQuality(
         string original,

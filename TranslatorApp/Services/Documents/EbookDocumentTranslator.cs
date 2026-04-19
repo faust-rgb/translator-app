@@ -1,6 +1,8 @@
 using System.IO;
 using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using TranslatorApp.Infrastructure;
 using TranslatorApp.Models;
@@ -16,6 +18,8 @@ public sealed class EbookDocumentTranslator(
     IEbookDocxExportService ebookDocxExportService)
     : DocumentTranslatorBase(textTranslationService, logService)
 {
+    private const int LongParagraphSplitThreshold = 420;
+    private static readonly Regex SentenceSplitRegex = new(@"(?<=[\.!\?。！？；;:：])(?=\s|$)|(?<=\n)(?=\S)", RegexOptions.Compiled);
     private static readonly HashSet<string> BlockElementNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "title",
@@ -59,18 +63,9 @@ public sealed class EbookDocumentTranslator(
         var targetExtension = ResolveTargetExtension(context.Settings.Translation.EbookOutputFormat);
         var outputPath = BuildOutputPath(context.Item.SourcePath, context.Settings.Translation.OutputDirectory, targetExtension);
         context.Item.OutputPath = outputPath;
-
-        if (context.ResumeUnitIndex > 0)
-        {
-            Log($"电子书暂不支持从第 {context.ResumeUnitIndex + 1} 个章节继续输出，已自动从头重新生成。");
-        }
-
-        var workingDirectory = Path.Combine(
-            Path.GetTempPath(),
-            "TranslatorApp",
-            "ebooks",
-            $"{Path.GetFileNameWithoutExtension(context.Item.SourcePath)}-{Guid.NewGuid():N}");
+        var workingDirectory = GetWorkingDirectory(context.Item.SourcePath);
         Directory.CreateDirectory(workingDirectory);
+        var completed = false;
 
         try
         {
@@ -101,10 +96,19 @@ public sealed class EbookDocumentTranslator(
                     bilingualSegments,
                     context.CancellationToken);
             }
+
+            completed = true;
         }
         finally
         {
-            TryDeleteDirectory(workingDirectory);
+            if (completed)
+            {
+                TryDeleteDirectory(workingDirectory);
+            }
+            else if (Directory.Exists(workingDirectory))
+            {
+                Log($"电子书工作区已保留，便于下次继续：{workingDirectory}");
+            }
         }
     }
 
@@ -118,6 +122,12 @@ public sealed class EbookDocumentTranslator(
 
         Log($"{extension} 电子书需要先转换为 EPUB 才能继续翻译。");
         var normalizedEpubPath = Path.Combine(workingDirectory, "source.epub");
+        if (context.ResumeUnitIndex > 0 && File.Exists(normalizedEpubPath))
+        {
+            Log("检测到上次保留的已转换 EPUB，继续复用。");
+            return normalizedEpubPath;
+        }
+
         await ebookConversionService.ConvertAsync(
             context.Item.SourcePath,
             normalizedEpubPath,
@@ -133,7 +143,15 @@ public sealed class EbookDocumentTranslator(
         List<BilingualSegment> bilingualSegments)
     {
         var extractDirectory = Path.Combine(workingDirectory, "epub-src");
-        ZipFile.ExtractToDirectory(sourceEpubPath, extractDirectory);
+        if (context.ResumeUnitIndex > 0 && Directory.Exists(extractDirectory))
+        {
+            Log($"从已保留的 EPUB 工作区继续：已完成 {context.ResumeUnitIndex} 个单元。");
+        }
+        else
+        {
+            TryDeleteDirectory(extractDirectory);
+            ZipFile.ExtractToDirectory(sourceEpubPath, extractDirectory);
+        }
 
         var packagePath = ResolvePackagePath(extractDirectory);
         var packageDocument = XDocument.Load(packagePath, LoadOptions.PreserveWhitespace);
@@ -145,12 +163,13 @@ public sealed class EbookDocumentTranslator(
         var ncxFiles = ResolveNcxDocumentPaths(packagePath, packageDocument);
         var requestedRange = GetRequestedRange(context.Settings, contentFiles.Count);
         var fullContentRangeSelected = requestedRange.Start == 1 && requestedRange.End >= contentFiles.Count;
-
-        var contentDocuments = contentFiles
+        var selectedContentFiles = contentFiles
             .Select((path, index) => new { Path = path, Index = index + 1 })
             .Where(x => IsWithinRequestedRange(x.Index, requestedRange))
-            .Select(x => LoadContentDocument(x.Path))
-            .Where(static x => x.Units.Count > 0)
+            .ToList();
+
+        var contentDocuments = selectedContentFiles
+            .Select(x => LoadContentDocument(x.Path, x.Index, contentFiles.Count))
             .ToList();
         var navigationDocuments = navFiles
             .Where(path => contentFiles.All(content => !PathsEqual(content, path)))
@@ -167,11 +186,18 @@ public sealed class EbookDocumentTranslator(
             contentDocuments.Sum(x => x.Units.Count) +
             navigationDocuments.Sum(x => x.Units.Count) +
             ncxDocuments.Sum(x => x.UnitCount));
+        var resumeUnitIndex = Math.Clamp(context.ResumeUnitIndex, 0, totalUnits);
         var processedUnits = 0;
+
+        if (resumeUnitIndex > 0)
+        {
+            var resumeProgress = (int)Math.Round(resumeUnitIndex * 100d / totalUnits);
+            await context.ReportProgressAsync(resumeProgress, $"电子书恢复进度 {resumeUnitIndex}/{totalUnits}");
+        }
 
         foreach (var document in contentDocuments)
         {
-            processedUnits = await TranslateContentDocumentAsync(document, context, bilingualSegments, totalUnits, processedUnits);
+            processedUnits = await TranslateContentDocumentAsync(document, context, bilingualSegments, totalUnits, processedUnits, resumeUnitIndex);
             document.Document.Save(document.Path, SaveOptions.DisableFormatting);
         }
 
@@ -179,23 +205,15 @@ public sealed class EbookDocumentTranslator(
 
         foreach (var navigationDocument in navigationDocuments)
         {
-            processedUnits += await TranslateNavigationDocumentAsync(navigationDocument, headingMap, fullContentRangeSelected, context, bilingualSegments);
-            var progress = (int)Math.Round(processedUnits * 100d / totalUnits);
-            await context.ReportProgressAsync(progress, $"电子书目录 {processedUnits}/{totalUnits}");
-            await context.SaveCheckpointAsync(processedUnits, 0, $"电子书目录 {processedUnits}/{totalUnits}");
+            processedUnits = await TranslateNavigationDocumentAsync(navigationDocument, headingMap, fullContentRangeSelected, context, bilingualSegments, totalUnits, processedUnits, resumeUnitIndex);
         }
 
         foreach (var ncxDocument in ncxDocuments)
         {
-            processedUnits += await TranslateNcxDocumentAsync(ncxDocument.Path, headingMap, fullContentRangeSelected, context, bilingualSegments);
-            var progress = (int)Math.Round(processedUnits * 100d / totalUnits);
-            await context.ReportProgressAsync(progress, $"电子书导航 {processedUnits}/{totalUnits}");
-            await context.SaveCheckpointAsync(processedUnits, 0, $"电子书导航 {processedUnits}/{totalUnits}");
+            processedUnits = await TranslateNcxDocumentAsync(ncxDocument.Path, headingMap, fullContentRangeSelected, context, bilingualSegments, totalUnits, processedUnits, resumeUnitIndex);
         }
 
-        var translatedContentDocuments = contentFiles
-            .Select((path, index) => new { Path = path, Index = index + 1 })
-            .Where(x => IsWithinRequestedRange(x.Index, requestedRange))
+        var translatedContentDocuments = selectedContentFiles
             .Select(x => new EpubExportDocument(x.Path, XDocument.Load(x.Path, LoadOptions.PreserveWhitespace)))
             .ToList();
 
@@ -207,14 +225,29 @@ public sealed class EbookDocumentTranslator(
         TranslationJobContext context,
         List<BilingualSegment> bilingualSegments,
         int totalUnits,
-        int processedUnits)
+        int processedUnits,
+        int resumeUnitIndex)
     {
+        var documentResumeOffset = Math.Min(document.Units.Count, Math.Max(0, resumeUnitIndex - processedUnits));
         var batchSize = GetBlockTranslationConcurrency(context.Settings);
-        for (var batchStart = 0; batchStart < document.Units.Count; batchStart += batchSize)
+        for (var batchStart = documentResumeOffset; batchStart < document.Units.Count; batchStart += batchSize)
         {
             var batch = document.Units.Skip(batchStart).Take(batchSize).ToList();
-            var translatedBatch = await TranslateBatchAsync(
-                batch.Select(unit => new TranslationBlock(unit.Original, unit.ContextHint)).ToList(),
+            var fragmentBlocks = new List<TranslationBlock>();
+            var fragmentOffsets = new List<(int Start, int Count)>();
+            foreach (var unit in batch)
+            {
+                var start = fragmentBlocks.Count;
+                foreach (var fragment in unit.Fragments)
+                {
+                    fragmentBlocks.Add(new TranslationBlock(fragment.Original, fragment.ContextHint, fragment.AdditionalRequirements));
+                }
+
+                fragmentOffsets.Add((start, unit.Fragments.Count));
+            }
+
+            var translatedFragments = await TranslateBatchAsync(
+                fragmentBlocks,
                 context.Settings,
                 context.PauseController,
                 partial => ReportPartialAsync(progressService, context.Item.SourcePath, partial),
@@ -223,18 +256,21 @@ public sealed class EbookDocumentTranslator(
             for (var index = 0; index < batch.Count; index++)
             {
                 var unit = batch[index];
-                var translated = translatedBatch[index];
+                var translated = string.Concat(
+                    translatedFragments
+                        .Skip(fragmentOffsets[index].Start)
+                        .Take(fragmentOffsets[index].Count));
                 ApplyTranslatedText(unit.TextNodes, translated);
                 bilingualSegments.Add(new BilingualSegment(unit.ContextHint, unit.Original, translated));
 
-                processedUnits++;
-                var progress = (int)Math.Round(processedUnits * 100d / totalUnits);
-                await context.ReportProgressAsync(progress, $"电子书 {Path.GetFileName(document.Path)} {processedUnits}/{totalUnits}");
-                await context.SaveCheckpointAsync(processedUnits, 0, $"电子书 {Path.GetFileName(document.Path)} {processedUnits}/{totalUnits}");
+                var absoluteUnitIndex = processedUnits + batchStart + index + 1;
+                var progress = (int)Math.Round(absoluteUnitIndex * 100d / totalUnits);
+                await context.ReportProgressAsync(progress, $"电子书 {Path.GetFileName(document.Path)} {absoluteUnitIndex}/{totalUnits}");
+                await context.SaveCheckpointAsync(absoluteUnitIndex, 0, $"电子书 {Path.GetFileName(document.Path)} {absoluteUnitIndex}/{totalUnits}");
             }
         }
 
-        return processedUnits;
+        return processedUnits + document.Units.Count;
     }
 
     private async Task<int> TranslateNavigationDocumentAsync(
@@ -242,30 +278,39 @@ public sealed class EbookDocumentTranslator(
         IReadOnlyDictionary<string, string> headingMap,
         bool allowFallbackTranslation,
         TranslationJobContext context,
-        List<BilingualSegment> bilingualSegments)
+        List<BilingualSegment> bilingualSegments,
+        int totalUnits,
+        int processedUnits,
+        int resumeUnitIndex)
     {
-        var synchronizedCount = 0;
-        var fallbackUnits = new List<(EpubTranslationUnit Unit, string Href)>();
-        foreach (var unit in document.Units)
+        var pendingUnits = new List<(EpubTranslationUnit Unit, int AbsoluteIndex, string? SynchronizedTitle)>();
+        var fallbackUnits = new List<(EpubTranslationUnit Unit, int AbsoluteIndex)>();
+        for (var index = 0; index < document.Units.Count; index++)
         {
+            var absoluteIndex = processedUnits + index + 1;
+            if (absoluteIndex <= resumeUnitIndex)
+            {
+                continue;
+            }
+
+            var unit = document.Units[index];
             var href = FindOwningHref(unit.TextNodes);
             var targetKey = string.IsNullOrWhiteSpace(href) ? null : ResolveNavigationTargetKey(document.Path, href!);
-            if (targetKey is not null && headingMap.TryGetValue(targetKey, out var synchronizedTitle))
+            if (targetKey is not null && TryResolveHeadingTitle(headingMap, targetKey, out var synchronizedTitle))
             {
-                ApplyTranslatedText(unit.TextNodes, synchronizedTitle);
-                bilingualSegments.Add(new BilingualSegment(unit.ContextHint, unit.Original, synchronizedTitle));
-                synchronizedCount++;
+                pendingUnits.Add((unit, absoluteIndex, synchronizedTitle));
             }
-            else
+            else if (allowFallbackTranslation)
             {
-                fallbackUnits.Add((unit, href ?? string.Empty));
+                fallbackUnits.Add((unit, absoluteIndex));
             }
         }
 
-        if (allowFallbackTranslation && fallbackUnits.Count > 0)
+        var fallbackTranslations = new Dictionary<int, string>();
+        if (fallbackUnits.Count > 0)
         {
             var translatedBatch = await TranslateBatchAsync(
-                fallbackUnits.Select(x => new TranslationBlock(x.Unit.Original, x.Unit.ContextHint)).ToList(),
+                fallbackUnits.Select(x => new TranslationBlock(x.Unit.Original, x.Unit.ContextHint, x.Unit.AdditionalRequirements)).ToList(),
                 context.Settings,
                 context.PauseController,
                 partial => ReportPartialAsync(progressService, context.Item.SourcePath, partial),
@@ -273,15 +318,33 @@ public sealed class EbookDocumentTranslator(
 
             for (var index = 0; index < fallbackUnits.Count; index++)
             {
-                var unit = fallbackUnits[index].Unit;
-                var translated = translatedBatch[index];
-                ApplyTranslatedText(unit.TextNodes, translated);
-                bilingualSegments.Add(new BilingualSegment(unit.ContextHint, unit.Original, translated));
+                fallbackTranslations[fallbackUnits[index].AbsoluteIndex] = translatedBatch[index];
             }
         }
 
+        var synchronizedTranslations = pendingUnits.ToDictionary(x => x.AbsoluteIndex, x => x.SynchronizedTitle!);
+        foreach (var unit in document.Units.Select((item, index) => new { Unit = item, AbsoluteIndex = processedUnits + index + 1 }))
+        {
+            if (unit.AbsoluteIndex <= resumeUnitIndex)
+            {
+                continue;
+            }
+
+            if (!synchronizedTranslations.TryGetValue(unit.AbsoluteIndex, out var translated) &&
+                !fallbackTranslations.TryGetValue(unit.AbsoluteIndex, out translated))
+            {
+                continue;
+            }
+
+            ApplyTranslatedText(unit.Unit.TextNodes, translated);
+            bilingualSegments.Add(new BilingualSegment(unit.Unit.ContextHint, unit.Unit.Original, translated));
+            var progress = (int)Math.Round(unit.AbsoluteIndex * 100d / totalUnits);
+            await context.ReportProgressAsync(progress, $"电子书目录 {unit.AbsoluteIndex}/{totalUnits}");
+            await context.SaveCheckpointAsync(unit.AbsoluteIndex, 0, $"电子书目录 {unit.AbsoluteIndex}/{totalUnits}");
+        }
+
         document.Document.Save(document.Path, SaveOptions.DisableFormatting);
-        return synchronizedCount + (allowFallbackTranslation ? fallbackUnits.Count : 0);
+        return processedUnits + document.Units.Count;
     }
 
     private async Task<int> TranslateNcxDocumentAsync(
@@ -289,7 +352,10 @@ public sealed class EbookDocumentTranslator(
         IReadOnlyDictionary<string, string> headingMap,
         bool allowFallbackTranslation,
         TranslationJobContext context,
-        List<BilingualSegment> bilingualSegments)
+        List<BilingualSegment> bilingualSegments,
+        int totalUnits,
+        int processedUnits,
+        int resumeUnitIndex)
     {
         var document = XDocument.Load(ncxPath, LoadOptions.PreserveWhitespace);
         var textElements = document
@@ -303,9 +369,16 @@ public sealed class EbookDocumentTranslator(
             return 0;
         }
 
-        var fallbackElements = new List<(XElement Element, int Index)>();
+        var synchronizedElements = new List<(XElement Element, int AbsoluteIndex, string Translation)>();
+        var fallbackElements = new List<(XElement Element, int Index, int AbsoluteIndex)>();
         for (var index = 0; index < textElements.Count; index++)
         {
+            var absoluteIndex = processedUnits + index + 1;
+            if (absoluteIndex <= resumeUnitIndex)
+            {
+                continue;
+            }
+
             var element = textElements[index];
             var navPoint = element.Ancestors().FirstOrDefault(x => x.Name.LocalName == "navPoint");
             var src = navPoint?
@@ -314,21 +387,21 @@ public sealed class EbookDocumentTranslator(
                 ?.Attribute("src")
                 ?.Value;
             var targetKey = string.IsNullOrWhiteSpace(src) ? null : ResolveNavigationTargetKey(ncxPath, src!);
-            if (targetKey is not null && headingMap.TryGetValue(targetKey, out var synchronizedTitle))
+            if (targetKey is not null && TryResolveHeadingTitle(headingMap, targetKey, out var synchronizedTitle))
             {
-                bilingualSegments.Add(new BilingualSegment($"EPUB 目录 {index + 1}", element.Value, synchronizedTitle));
-                element.Value = synchronizedTitle;
+                synchronizedElements.Add((element, absoluteIndex, synchronizedTitle));
             }
-            else
+            else if (allowFallbackTranslation)
             {
-                fallbackElements.Add((element, index));
+                fallbackElements.Add((element, index, absoluteIndex));
             }
         }
 
-        if (allowFallbackTranslation && fallbackElements.Count > 0)
+        var fallbackTranslations = new Dictionary<int, string>();
+        if (fallbackElements.Count > 0)
         {
             var translatedBatch = await TranslateBatchAsync(
-                fallbackElements.Select(x => new TranslationBlock(x.Element.Value, $"EPUB 目录 {x.Index + 1}")).ToList(),
+                fallbackElements.Select(x => new TranslationBlock(x.Element.Value, $"EPUB 目录 {x.Index + 1}", "类型：电子书导航目录。请保持简洁，尽量与对应正文标题风格一致。")).ToList(),
                 context.Settings,
                 context.PauseController,
                 partial => ReportPartialAsync(progressService, context.Item.SourcePath, partial),
@@ -336,14 +409,33 @@ public sealed class EbookDocumentTranslator(
 
             for (var index = 0; index < fallbackElements.Count; index++)
             {
-                var element = fallbackElements[index].Element;
-                bilingualSegments.Add(new BilingualSegment($"EPUB 目录 {fallbackElements[index].Index + 1}", element.Value, translatedBatch[index]));
-                element.Value = translatedBatch[index];
+                fallbackTranslations[fallbackElements[index].AbsoluteIndex] = translatedBatch[index];
             }
         }
 
+        var synchronizedTranslations = synchronizedElements.ToDictionary(x => x.AbsoluteIndex, x => x.Translation);
+        foreach (var item in textElements.Select((element, index) => new { Element = element, AbsoluteIndex = processedUnits + index + 1, DisplayIndex = index + 1 }))
+        {
+            if (item.AbsoluteIndex <= resumeUnitIndex)
+            {
+                continue;
+            }
+
+            if (!synchronizedTranslations.TryGetValue(item.AbsoluteIndex, out var translated) &&
+                !fallbackTranslations.TryGetValue(item.AbsoluteIndex, out translated))
+            {
+                continue;
+            }
+
+            bilingualSegments.Add(new BilingualSegment($"EPUB 目录 {item.DisplayIndex}", item.Element.Value, translated));
+            item.Element.Value = translated;
+            var progress = (int)Math.Round(item.AbsoluteIndex * 100d / totalUnits);
+            await context.ReportProgressAsync(progress, $"电子书导航 {item.AbsoluteIndex}/{totalUnits}");
+            await context.SaveCheckpointAsync(item.AbsoluteIndex, 0, $"电子书导航 {item.AbsoluteIndex}/{totalUnits}");
+        }
+
         document.Save(ncxPath, SaveOptions.DisableFormatting);
-        return textElements.Count;
+        return processedUnits + textElements.Count;
     }
 
     private static Dictionary<string, string> BuildHeadingTargetMap(IReadOnlyList<EpubContentDocument> contentDocuments)
@@ -353,15 +445,19 @@ public sealed class EbookDocumentTranslator(
         {
             var headings = document.Document
                 .Descendants()
-                .Where(IsHeadingElement)
+                .Where(IsPotentialHeadingElement)
                 .ToList();
             var firstHeading = headings
                 .Select(GetElementText)
                 .FirstOrDefault(text => !string.IsNullOrWhiteSpace(text));
+            if (string.IsNullOrWhiteSpace(firstHeading))
+            {
+                firstHeading = document.DocumentTitle;
+            }
 
             if (!string.IsNullOrWhiteSpace(firstHeading))
             {
-                map[Path.GetFullPath(document.Path)] = firstHeading!;
+                map[NormalizeDocumentKey(document.Path)] = firstHeading!;
             }
 
             foreach (var heading in headings)
@@ -376,7 +472,7 @@ public sealed class EbookDocumentTranslator(
 
                 if (!string.IsNullOrWhiteSpace(id))
                 {
-                    map[$"{Path.GetFullPath(document.Path)}#{id}"] = text;
+                    map[$"{NormalizeDocumentKey(document.Path)}#{NormalizeAnchorFragment(id)}"] = text;
                 }
             }
         }
@@ -386,6 +482,26 @@ public sealed class EbookDocumentTranslator(
 
     private static bool IsHeadingElement(XElement element) =>
         element.Name.LocalName is "h1" or "h2" or "h3" or "h4" or "h5" or "h6";
+
+    private static bool IsPotentialHeadingElement(XElement element)
+    {
+        if (IsHeadingElement(element) || string.Equals(element.Name.LocalName, "title", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var hint = string.Join(
+            " ",
+            element.Attribute("class")?.Value ?? string.Empty,
+            element.Attribute("epub:type")?.Value ?? string.Empty,
+            element.Attribute("type")?.Value ?? string.Empty,
+            element.Attribute("id")?.Value ?? string.Empty);
+
+        return hint.Contains("chapter", StringComparison.OrdinalIgnoreCase) ||
+               hint.Contains("title", StringComparison.OrdinalIgnoreCase) ||
+               hint.Contains("heading", StringComparison.OrdinalIgnoreCase) ||
+               hint.Contains("subtitle", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static string GetElementText(XElement element) =>
         string.Concat(element
@@ -416,18 +532,46 @@ public sealed class EbookDocumentTranslator(
             return null;
         }
 
-        var hashIndex = href.IndexOf('#');
-        var filePart = hashIndex >= 0 ? href[..hashIndex] : href;
-        var fragment = hashIndex >= 0 ? href[(hashIndex + 1)..] : string.Empty;
+        var normalizedHref = href.Trim();
+        var queryIndex = normalizedHref.IndexOf('?');
+        if (queryIndex >= 0)
+        {
+            normalizedHref = normalizedHref[..queryIndex];
+        }
+
+        var hashIndex = normalizedHref.IndexOf('#');
+        var filePart = hashIndex >= 0 ? normalizedHref[..hashIndex] : normalizedHref;
+        var fragment = hashIndex >= 0 ? normalizedHref[(hashIndex + 1)..] : string.Empty;
         var baseDirectory = Path.GetDirectoryName(navigationDocumentPath)!;
         var targetPath = string.IsNullOrWhiteSpace(filePart)
-            ? Path.GetFullPath(navigationDocumentPath)
+            ? NormalizeDocumentKey(navigationDocumentPath)
             : NormalizePackageRelativePath(baseDirectory, filePart);
         var normalizedFragment = NormalizeAnchorFragment(fragment);
 
         return string.IsNullOrWhiteSpace(normalizedFragment)
             ? targetPath
             : $"{targetPath}#{normalizedFragment}";
+    }
+
+    private static bool TryResolveHeadingTitle(IReadOnlyDictionary<string, string> headingMap, string targetKey, out string synchronizedTitle)
+    {
+        if (headingMap.TryGetValue(targetKey, out synchronizedTitle!))
+        {
+            return true;
+        }
+
+        var hashIndex = targetKey.IndexOf('#');
+        if (hashIndex > 0)
+        {
+            var documentKey = targetKey[..hashIndex];
+            if (headingMap.TryGetValue(documentKey, out synchronizedTitle!))
+            {
+                return true;
+            }
+        }
+
+        synchronizedTitle = string.Empty;
+        return false;
     }
 
     private static EpubCoverInfo? ResolveCoverInfo(
@@ -501,8 +645,21 @@ public sealed class EbookDocumentTranslator(
     private static EpubContentDocument LoadContentDocument(string path)
     {
         var document = XDocument.Load(path, LoadOptions.PreserveWhitespace);
-        var units = BuildTranslationUnits(document, Path.GetFileName(path));
-        return new EpubContentDocument(path, document, units);
+        var documentTitle = ResolveDocumentTitle(document);
+        var units = BuildTranslationUnits(document, Path.GetFileName(path), documentTitle, null);
+        return new EpubContentDocument(path, document, units, documentTitle);
+    }
+
+    private static EpubContentDocument LoadContentDocument(string path, int contentIndex, int totalContentCount)
+    {
+        var document = XDocument.Load(path, LoadOptions.PreserveWhitespace);
+        var documentTitle = ResolveDocumentTitle(document);
+        var units = BuildTranslationUnits(
+            document,
+            Path.GetFileName(path),
+            documentTitle,
+            $"章节 {contentIndex}/{totalContentCount}");
+        return new EpubContentDocument(path, document, units, documentTitle);
     }
 
     private static int GetNcxUnitCount(string path)
@@ -513,12 +670,20 @@ public sealed class EbookDocumentTranslator(
             .Count(x => x.Name.LocalName == "text" && !string.IsNullOrWhiteSpace(x.Value));
     }
 
-    private static List<EpubTranslationUnit> BuildTranslationUnits(XDocument document, string fileName)
+    private static List<EpubTranslationUnit> BuildTranslationUnits(
+        XDocument document,
+        string fileName,
+        string documentTitle,
+        string? chapterIndexLabel)
     {
         var units = new List<EpubTranslationUnit>();
         var candidates = document
             .Descendants()
             .Where(IsTranslatableLeafElement)
+            .ToList();
+        var headingCandidates = document
+            .Descendants()
+            .Where(IsPotentialHeadingElement)
             .ToList();
 
         foreach (var element in candidates)
@@ -541,7 +706,11 @@ public sealed class EbookDocumentTranslator(
                 continue;
             }
 
-            units.Add(new EpubTranslationUnit(textNodes, original, $"EPUB {fileName} <{element.Name.LocalName}>"));
+            var headingContext = ResolveHeadingContext(element, headingCandidates, documentTitle);
+            var contextHint = BuildContextHint(fileName, element, headingContext, chapterIndexLabel);
+            var additionalRequirements = BuildAdditionalRequirements(element);
+            var fragments = BuildTranslationFragments(original, contextHint, additionalRequirements);
+            units.Add(new EpubTranslationUnit(textNodes, original, contextHint, additionalRequirements, fragments));
         }
 
         return units;
@@ -570,6 +739,194 @@ public sealed class EbookDocumentTranslator(
         }
 
         return value.Trim().Any(char.IsLetter);
+    }
+
+    private static string ResolveDocumentTitle(XDocument document)
+    {
+        var title = document
+            .Descendants()
+            .FirstOrDefault(x => string.Equals(x.Name.LocalName, "title", StringComparison.OrdinalIgnoreCase))
+            ?.Value
+            ?.Trim();
+
+        if (!string.IsNullOrWhiteSpace(title))
+        {
+            return title;
+        }
+
+        var firstHeading = document
+            .Descendants()
+            .Where(IsPotentialHeadingElement)
+            .Select(GetElementText)
+            .FirstOrDefault(text => !string.IsNullOrWhiteSpace(text));
+
+        return firstHeading ?? string.Empty;
+    }
+
+    private static string ResolveHeadingContext(XElement element, IReadOnlyList<XElement> headingCandidates, string documentTitle)
+    {
+        var orderedElements = element.Document?.Descendants().ToList() ?? [];
+        if (orderedElements.Count == 0)
+        {
+            return documentTitle;
+        }
+
+        var positions = orderedElements
+            .Select((item, index) => new { item, index })
+            .ToDictionary(x => x.item, x => x.index);
+        if (!positions.TryGetValue(element, out var targetIndex))
+        {
+            return documentTitle;
+        }
+
+        var resolvedHeading = documentTitle;
+        foreach (var candidate in headingCandidates)
+        {
+            if (!positions.TryGetValue(candidate, out var headingIndex) || headingIndex > targetIndex)
+            {
+                continue;
+            }
+
+            var text = GetElementText(candidate);
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                resolvedHeading = text;
+            }
+        }
+
+        return resolvedHeading;
+    }
+
+    private static string BuildContextHint(string fileName, XElement element, string headingContext, string? chapterIndexLabel)
+    {
+        var parts = new List<string> { $"EPUB {DescribeElementRole(element)} <{element.Name.LocalName}>" };
+        if (!string.IsNullOrWhiteSpace(chapterIndexLabel))
+        {
+            parts.Add(chapterIndexLabel);
+        }
+
+        if (!string.IsNullOrWhiteSpace(headingContext))
+        {
+            parts.Add($"章节上下文：{headingContext}");
+        }
+
+        parts.Add($"来源文件：{fileName}");
+        return string.Join("；", parts);
+    }
+
+    private static string DescribeElementRole(XElement element) => element.Name.LocalName switch
+    {
+        "title" => "文档标题",
+        "h1" or "h2" or "h3" or "h4" or "h5" or "h6" => "章节标题",
+        "li" => "列表项",
+        "figcaption" or "caption" => "图表说明",
+        "td" or "th" => "表格单元格",
+        "blockquote" => "引用块",
+        _ => "正文块"
+    };
+
+    private static string BuildAdditionalRequirements(XElement element)
+    {
+        var requirements = new List<string>();
+        switch (element.Name.LocalName)
+        {
+            case "title":
+            case "h1":
+            case "h2":
+            case "h3":
+            case "h4":
+            case "h5":
+            case "h6":
+                requirements.Add("类型：电子书标题。请保持标题风格和层级感，译文简洁，不要扩写成正文。");
+                break;
+            case "li":
+            case "dd":
+            case "dt":
+                requirements.Add("类型：电子书列表。请保留条目边界、编号/项目符号和换行结构，不要把多个条目合并成一段。");
+                break;
+            case "figcaption":
+            case "caption":
+                requirements.Add("类型：电子书图表说明。请保留图号、子图编号、单位、括号和短说明风格。");
+                break;
+            case "td":
+            case "th":
+                requirements.Add("类型：电子书表格单元格。请保留数字、单位、缩写和换行，不要把短语扩写成解释性整句。");
+                break;
+            case "blockquote":
+                requirements.Add("类型：引用块。请保留引用语气和段落边界，不要混入解释性说明。");
+                break;
+            default:
+                requirements.Add("类型：电子书正文。请保留段落边界、内联强调边界和链接文本边界，不要无故扩写。");
+                break;
+        }
+
+        if (element.Descendants().Any(x => x.Name.LocalName == "a"))
+        {
+            requirements.Add("当前片段包含链接文本。请翻译可见文字，但不要破坏链接边界，也不要把链接前后的内容并到一起。");
+        }
+
+        if (element.Descendants().Any(x => x.Name.LocalName is "em" or "strong" or "b" or "i"))
+        {
+            requirements.Add("当前片段包含强调样式。请尽量保持强调部分的语义边界，不要把强调片段并入相邻短语。");
+        }
+
+        return string.Join("\n", requirements);
+    }
+
+    private static IReadOnlyList<EpubTranslationFragment> BuildTranslationFragments(
+        string original,
+        string contextHint,
+        string additionalRequirements)
+    {
+        var fragments = SplitLongTextForTranslation(original)
+            .Select(fragment => new EpubTranslationFragment(fragment, contextHint, additionalRequirements))
+            .ToList();
+
+        if (fragments.Count == 0)
+        {
+            fragments.Add(new EpubTranslationFragment(original, contextHint, additionalRequirements));
+        }
+
+        return fragments;
+    }
+
+    private static IReadOnlyList<string> SplitLongTextForTranslation(string original)
+    {
+        if (string.IsNullOrWhiteSpace(original) || original.Length <= LongParagraphSplitThreshold)
+        {
+            return new[] { original };
+        }
+
+        var rawSegments = SentenceSplitRegex
+            .Split(original)
+            .Select(segment => segment)
+            .Where(segment => !string.IsNullOrWhiteSpace(segment))
+            .ToList();
+
+        if (rawSegments.Count <= 1)
+        {
+            return new[] { original };
+        }
+
+        var merged = new List<string>();
+        var builder = new StringBuilder();
+        foreach (var segment in rawSegments)
+        {
+            if (builder.Length > 0 && builder.Length + segment.Length > LongParagraphSplitThreshold)
+            {
+                merged.Add(builder.ToString());
+                builder.Clear();
+            }
+
+            builder.Append(segment);
+        }
+
+        if (builder.Length > 0)
+        {
+            merged.Add(builder.ToString());
+        }
+
+        return merged.Count == 0 ? new[] { original } : merged;
     }
 
     private static void ApplyTranslatedText(IReadOnlyList<XText> textNodes, string translated)
@@ -745,7 +1102,7 @@ public sealed class EbookDocumentTranslator(
             throw new InvalidOperationException($"EPUB 资源路径越界，已拒绝访问：{relativePath}");
         }
 
-        return resolvedPath;
+        return NormalizeDocumentKey(resolvedPath);
     }
 
     private static string NormalizeAnchorFragment(string fragment)
@@ -762,6 +1119,9 @@ public sealed class EbookDocumentTranslator(
         path.EndsWith(Path.DirectorySeparatorChar) || path.EndsWith(Path.AltDirectorySeparatorChar)
             ? path
             : path + Path.DirectorySeparatorChar;
+
+    private static string NormalizeDocumentKey(string path) =>
+        Path.GetFullPath(path).Trim().Normalize(NormalizationForm.FormC);
 
     private static void PackDirectoryAsEpub(string sourceDirectory, string outputPath)
     {
@@ -798,7 +1158,19 @@ public sealed class EbookDocumentTranslator(
         string.Equals(value, "DOCX", StringComparison.OrdinalIgnoreCase) ? ".docx" : ".epub";
 
     private static bool PathsEqual(string left, string right) =>
-        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+        string.Equals(NormalizeDocumentKey(left), NormalizeDocumentKey(right), StringComparison.OrdinalIgnoreCase);
+
+    private static string GetWorkingDirectory(string sourcePath)
+    {
+        var sourceBytes = Encoding.UTF8.GetBytes(Path.GetFullPath(sourcePath));
+        var hashBytes = SHA256.HashData(sourceBytes);
+        var hash = Convert.ToHexString(hashBytes[..8]).ToLowerInvariant();
+        return Path.Combine(
+            Path.GetTempPath(),
+            "TranslatorApp",
+            "ebooks",
+            $"{Path.GetFileNameWithoutExtension(sourcePath)}-{hash}");
+    }
 
     private void TryDeleteDirectory(string path)
     {
@@ -821,9 +1193,20 @@ public sealed class EbookDocumentTranslator(
         return Task.CompletedTask;
     }
 
-    private sealed record EpubTranslationUnit(IReadOnlyList<XText> TextNodes, string Original, string ContextHint);
+    private sealed record EpubTranslationFragment(string Original, string ContextHint, string AdditionalRequirements);
 
-    private sealed record EpubContentDocument(string Path, XDocument Document, IReadOnlyList<EpubTranslationUnit> Units);
+    private sealed record EpubTranslationUnit(
+        IReadOnlyList<XText> TextNodes,
+        string Original,
+        string ContextHint,
+        string AdditionalRequirements,
+        IReadOnlyList<EpubTranslationFragment> Fragments);
+
+    private sealed record EpubContentDocument(
+        string Path,
+        XDocument Document,
+        IReadOnlyList<EpubTranslationUnit> Units,
+        string DocumentTitle);
 
     public sealed record EpubExportDocument(string SourcePath, XDocument Document);
 

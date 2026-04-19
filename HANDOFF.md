@@ -51,6 +51,11 @@
   - EPUB can be translated and exported natively as EPUB or DOCX
   - MOBI/AZW3 import through `ebook-convert.exe` to EPUB first
   - EPUB body headings sync back into `nav/ncx` TOC labels
+  - EPUB translation units now carry chapter context plus block-type-specific guidance for headings, lists, captions, table cells, and quotes
+  - long EPUB paragraphs are split on sentence-like boundaries before translation and merged back into the original XHTML nodes
+  - EPUB resume now reuses a stable on-disk workspace so interrupted jobs can continue from preserved extracted content instead of restarting the whole book
+  - repeated translation requests with identical prompt context are cached in-process to reduce duplicate remote calls
+  - nav/ncx synchronization now normalizes path and anchor keys before matching translated body headings
   - DOCX ebook export supports cover page, metadata/info page, updateable TOC, images, figures, captions, and common inline/block styles
   - figure/image export now reads real pixel dimensions when available
 - Translation range setting added in UI and settings:
@@ -86,7 +91,8 @@ dotnet run --project .\TranslatorApp\TranslatorApp.csproj
 - Word "page range" is still approximate rather than Word-renderer-perfect.
 - Word now covers more structures, but true field-code-aware editing, host-anchor-aware note context, and merged-cell semantic recovery are still not fully modeled.
 - EPUB "range" is chapter/content-document based, not reader page-number based.
-- Partial EPUB translation intentionally avoids fully re-translating untouched TOC entries, so mixed translated/untranslated navigation is possible when only some chapters are selected.
+- EPUB resume is now real resume, but it depends on the preserved temp workspace for that source file remaining available between runs.
+- Partial EPUB translation still avoids fully rewriting untouched TOC entries, so mixed translated/untranslated navigation is still possible when only some chapters are selected.
 
 ## Where To Edit Next
 
