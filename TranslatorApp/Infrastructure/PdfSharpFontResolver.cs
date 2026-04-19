@@ -296,7 +296,11 @@ public static class PdfSharpFontResolver
         private static string NormalizeFamilyName(string familyName) =>
             string.IsNullOrWhiteSpace(familyName)
                 ? DefaultFontFamily.ToLowerInvariant()
-                : familyName.Trim().ToLowerInvariant();
+                : familyName
+                    .Split([',', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(candidate => candidate.Trim().Trim('"', '\''))
+                    .FirstOrDefault(candidate => !string.IsNullOrWhiteSpace(candidate))?
+                    .ToLowerInvariant() ?? DefaultFontFamily.ToLowerInvariant();
 
         private static string? FindAnyInstalledFallback()
         {

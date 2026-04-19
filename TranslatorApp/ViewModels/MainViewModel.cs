@@ -99,7 +99,13 @@ public partial class MainViewModel : ObservableObject
     private bool enableStreaming = true;
 
     [ObservableProperty]
-    private int retryCount = 2;
+    private int serverErrorRetryCount = 2;
+
+    [ObservableProperty]
+    private int timeoutRetryCount = 1;
+
+    [ObservableProperty]
+    private int requestTimeoutSeconds = 300;
 
     [ObservableProperty]
     private bool enableOcrForScannedPdf = true;
@@ -231,12 +237,30 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    partial void OnRetryCountChanged(int value)
+    partial void OnServerErrorRetryCountChanged(int value)
     {
         var clamped = Math.Clamp(value, 0, 10);
         if (clamped != value)
         {
-            retryCount = clamped;
+            serverErrorRetryCount = clamped;
+        }
+    }
+
+    partial void OnTimeoutRetryCountChanged(int value)
+    {
+        var clamped = Math.Clamp(value, 0, 10);
+        if (clamped != value)
+        {
+            timeoutRetryCount = clamped;
+        }
+    }
+
+    partial void OnRequestTimeoutSecondsChanged(int value)
+    {
+        var clamped = Math.Clamp(value, 5, 3600);
+        if (clamped != value)
+        {
+            requestTimeoutSeconds = clamped;
         }
     }
 
@@ -313,12 +337,14 @@ public partial class MainViewModel : ObservableObject
         GlossaryPath = settings.Translation.GlossaryPath;
         ExportBilingualDocument = settings.Translation.ExportBilingualDocument;
         EnableStreaming = settings.Translation.EnableStreaming;
-        RetryCount = settings.Translation.RetryCount;
+        ServerErrorRetryCount = ResolveServerErrorRetryCount(settings.Translation);
+        TimeoutRetryCount = ResolveTimeoutRetryCount(settings.Translation);
         EnableOcrForScannedPdf = settings.Ocr.EnableOcrForScannedPdf;
         TesseractDataPath = settings.Ocr.TesseractDataPath;
         OcrLanguage = settings.Ocr.Language;
         Temperature = settings.Ai.Temperature;
         MaxTokens = settings.Ai.MaxTokens;
+        RequestTimeoutSeconds = settings.Ai.TimeoutSeconds;
 
         var history = await _historyService.LoadAsync();
         HistoryItems.Clear();
@@ -536,6 +562,7 @@ public partial class MainViewModel : ObservableObject
             CustomHeaders = settings.Ai.CustomHeaders;
             Temperature = settings.Ai.Temperature;
             MaxTokens = settings.Ai.MaxTokens;
+            RequestTimeoutSeconds = settings.Ai.TimeoutSeconds;
             SourceLanguage = settings.Translation.SourceLanguage;
             TargetLanguage = settings.Translation.TargetLanguage;
             OutputDirectory = settings.Translation.OutputDirectory;
@@ -551,7 +578,8 @@ public partial class MainViewModel : ObservableObject
             GlossaryPath = settings.Translation.GlossaryPath;
             ExportBilingualDocument = settings.Translation.ExportBilingualDocument;
             EnableStreaming = settings.Translation.EnableStreaming;
-            RetryCount = settings.Translation.RetryCount;
+            ServerErrorRetryCount = ResolveServerErrorRetryCount(settings.Translation);
+            TimeoutRetryCount = ResolveTimeoutRetryCount(settings.Translation);
             EnableOcrForScannedPdf = settings.Ocr.EnableOcrForScannedPdf;
             TesseractDataPath = settings.Ocr.TesseractDataPath;
             OcrLanguage = settings.Ocr.Language;
@@ -774,7 +802,8 @@ public partial class MainViewModel : ObservableObject
                 AnthropicVersion = AnthropicVersion,
                 CustomHeaders = CustomHeaders,
                 Temperature = Math.Clamp(Temperature, 0, 2),
-                MaxTokens = Math.Max(1, MaxTokens)
+                MaxTokens = Math.Max(1, MaxTokens),
+                TimeoutSeconds = Math.Clamp(RequestTimeoutSeconds, 5, 3600)
             },
             Translation = new TranslationSettings
             {
@@ -793,7 +822,9 @@ public partial class MainViewModel : ObservableObject
                 GlossaryPath = GlossaryPath,
                 ExportBilingualDocument = ExportBilingualDocument,
                 EnableStreaming = EnableStreaming,
-                RetryCount = Math.Clamp(RetryCount, 0, 10)
+                ServerErrorRetryCount = Math.Clamp(ServerErrorRetryCount, 0, 10),
+                TimeoutRetryCount = Math.Clamp(TimeoutRetryCount, 0, 10),
+                RetryCount = Math.Clamp(ServerErrorRetryCount, 0, 10)
             },
             Ocr = new Configuration.OcrSettings
             {
@@ -863,4 +894,12 @@ public partial class MainViewModel : ObservableObject
 
     private static string NormalizeEbookOutputFormat(string? value) =>
         string.Equals(value, "DOCX", StringComparison.OrdinalIgnoreCase) ? "DOCX" : "EPUB";
+
+    private static int ResolveServerErrorRetryCount(TranslationSettings settings) =>
+        settings.ServerErrorRetryCount == 2 && settings.RetryCount != 2
+            ? Math.Max(0, settings.RetryCount)
+            : Math.Max(0, settings.ServerErrorRetryCount);
+
+    private static int ResolveTimeoutRetryCount(TranslationSettings settings) =>
+        Math.Max(0, settings.TimeoutRetryCount);
 }

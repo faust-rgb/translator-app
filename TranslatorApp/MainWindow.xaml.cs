@@ -90,4 +90,12 @@ public partial class MainWindow : Window
 
         dialog.ShowDialog();
     }
+
+    private void LogTextBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (sender is TextBox textBox)
+        {
+            textBox.ScrollToEnd();
+        }
+    }
 }
