@@ -16,6 +16,7 @@ public abstract class DocumentTranslatorBase(ITextTranslationService textTransla
     protected async Task<string> TranslateBlockAsync(
         string text,
         string contextHint,
+        string additionalRequirements,
         AppSettings settings,
         PauseController pauseController,
         Func<string, Task>? onPartialResponse,
@@ -29,7 +30,7 @@ public abstract class DocumentTranslatorBase(ITextTranslationService textTransla
             return text;
         }
 
-        return await textTranslationService.TranslateAsync(text, contextHint, settings, onPartialResponse, cancellationToken);
+        return await textTranslationService.TranslateAsync(text, contextHint, additionalRequirements, settings, onPartialResponse, cancellationToken);
     }
 
     protected async Task<IReadOnlyList<string>> TranslateBatchAsync(
@@ -53,6 +54,7 @@ public abstract class DocumentTranslatorBase(ITextTranslationService textTransla
                 results[i] = await TranslateBlockAsync(
                     blocks[i].Text,
                     blocks[i].ContextHint,
+                    blocks[i].AdditionalRequirements,
                     settings,
                     pauseController,
                     onPartialResponse,
@@ -80,6 +82,7 @@ public abstract class DocumentTranslatorBase(ITextTranslationService textTransla
                 results[index] = await TranslateBlockAsync(
                     block.Text,
                     block.ContextHint,
+                    block.AdditionalRequirements,
                     settings,
                     pauseController,
                     partialCallback,
@@ -135,5 +138,5 @@ public abstract class DocumentTranslatorBase(ITextTranslationService textTransla
     protected static string DescribeRequestedRange(string unitName, (int Start, int End) range) =>
         range.End < range.Start ? $"未命中任何{unitName}" : $"{unitName} {range.Start}-{range.End}";
 
-    protected readonly record struct TranslationBlock(string Text, string ContextHint);
+    protected readonly record struct TranslationBlock(string Text, string ContextHint, string AdditionalRequirements = "");
 }

@@ -23,11 +23,23 @@
   - redraw uses block-aware margin, line-height, hanging-indent, and overflow fallback strategies
   - OCR sparse-text detection, OCR column/block aggregation, PDF column detection, marginal-noise filtering, and paragraph-continuation thresholds are now configurable through settings instead of being hard-coded in one place
 - PDF text translation now retries suspicious English fragments with stronger instructions, and the retry path creates a fresh AI client per attempt to avoid stale-request failures after 504s.
+- PDF translation now also uses:
+  - block-type-specific translation requirements for title / caption / table / list / code / footnote / header-footer content
+  - placeholder protection for citations, URLs, DOI/arXiv ids, LaTeX-like commands, and similar sensitive fragments
+  - coarse page-region tagging (`body/caption/table/margin`) to constrain grouping and context lookup
+  - table-row splitting into cell-like subsegments before translation when the row layout looks columnar
 - Added CLI helpers:
   - `tools/PdfBilingualInspector` for bilingual export inspection
   - `tools/TranslatorCliRunner` for headless single-document reruns using saved local settings
 - Word translation preserves formatting more safely by redistributing translated text at continuous-format-group boundaries instead of raw run-length splits
 - Word range translation now uses approximate source-page detection from rendered/manual page breaks plus section/page-break anchors
+- Word translation is now more structure-aware:
+  - main body paragraphs and table cells are handled separately
+  - full-range translation also covers headers, footers, footnotes, endnotes, and comments
+  - heading / list / table-cell / textbox / header-footer / footnote-comment content gets type-specific prompt guidance
+  - hyperlink / superscript-subscript / field-result / textbox boundaries influence run grouping and prompt constraints
+  - heading-context and table row-column hints are attached to translation units where available
+  - list/table/boundary-sensitive units now participate in targeted quality retry checks
 - Translation concurrency is now explicitly split into:
   - document-level parallelism
   - block-level parallelism
@@ -72,6 +84,7 @@ dotnet run --project .\TranslatorApp\TranslatorApp.csproj
 - Inline formulas inside normal prose are now handled more carefully, but formula/prose boundary heuristics are still best-effort and should be regression-checked against papers with dense notation.
 - PDF tables and charts are still handled heuristically: original shapes/images stay in place, while detectable text is translated and redrawn.
 - Word "page range" is still approximate rather than Word-renderer-perfect.
+- Word now covers more structures, but true field-code-aware editing, host-anchor-aware note context, and merged-cell semantic recovery are still not fully modeled.
 - EPUB "range" is chapter/content-document based, not reader page-number based.
 - Partial EPUB translation intentionally avoids fully re-translating untouched TOC entries, so mixed translated/untranslated navigation is possible when only some chapters are selected.
 

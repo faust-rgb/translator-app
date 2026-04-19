@@ -92,11 +92,21 @@ dotnet run --project .\TranslatorApp\TranslatorApp.csproj
   - repairs some cross-block hyphenation / continuation splits before translation
   - distinguishes pure formula blocks from prose that merely contains formulas
   - classifies likely titles, captions, header/footer lines, footnotes, lists, code, and table-like rows
+  - adds block-type-specific prompt requirements and placeholder protection for sensitive fragments
+  - tags coarse regions such as body / caption / table / margin to reduce cross-region grouping
+  - splits table-like rows into cell-like translation targets when possible
   - uses block-aware redraw margins and overflow fallback
   - wraps translated text character-by-character for Chinese output
   - most OCR/PDF layout thresholds are now configurable via `OcrSettings` and `TranslationSettings`, especially sparse OCR detection, column detection, marginal-noise filtering, and paragraph continuation heuristics
 - PDF retry logic now does an extra pass for risky English fragments that come back untranslated, and creates a fresh AI client for each retry attempt.
 - Word translation no longer redistributes translated text at raw run granularity; it groups adjacent runs with identical formatting first to preserve formatting boundaries more safely.
+- Word translation now also:
+  - separates main paragraphs from table-cell units
+  - covers headers / footers / footnotes / endnotes / comments on full-document runs
+  - adds type-aware guidance for heading / list / table-cell / textbox / note-like content
+  - preserves more run boundaries around hyperlinks, superscripts/subscripts, field-like runs, and textbox content
+  - uses heading-context and table location hints to improve short-segment translation quality
+  - performs extra quality checks for list structure, compact table cells, boundary-sensitive runs, and numbering-heavy content
 - Ebook support now follows this model:
   - native EPUB translation edits XHTML/TOC locally
   - EPUB output is native
