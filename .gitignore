@@ -6,6 +6,8 @@ obj_cli_runner/
 obj_verify_inspector/
 bin_verify_inspector/
 publish/
+publish-singlefile/
+publish.zip
 .vs/
 *.user
 *.suo
@@ -13,4 +15,6 @@ publish/
 *.working
 tmp/
 tmp-bilingual-check.docx
+obj_publish_singlefile/
+代码问题分析报告.txt
 tools/PdfBilingualInspector/tools/
