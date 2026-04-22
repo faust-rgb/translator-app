@@ -149,8 +149,9 @@ public partial class MainViewModel : ObservableObject
             "PPTX" => "当前文档按原文幻灯片范围处理。",
             "XLSX" => "当前文档按原文工作表范围处理。",
             "DOCX" => "当前文档按近似原文页范围处理，依据分页符、分页锚点与分节换页估算。",
+            "TXT" => "当前纯文本按段落文本块范围处理，空行结构会尽量保留。",
             "EPUB" or "MOBI" or "AZW3" => "当前电子书按章节文档范围处理，不使用阅读器动态页码。",
-            _ => "PDF 按页、PPT 按幻灯片、Excel 按工作表、EPUB 按章节文档、Word 按近似分页范围处理。"
+            _ => "PDF 按页、PPT 按幻灯片、Excel 按工作表、TXT 按段落文本块、EPUB 按章节文档、Word 按近似分页范围处理。"
         };
 
     public ObservableCollection<DocumentTranslationItem> Documents { get; } = [];
@@ -388,7 +389,7 @@ public partial class MainViewModel : ObservableObject
         var dialog = new OpenFileDialog
         {
             Multiselect = true,
-            Filter = "支持的文档|*.docx;*.xlsx;*.pptx;*.pdf;*.epub;*.mobi;*.azw3|全部文件|*.*"
+            Filter = "支持的文档|*.docx;*.xlsx;*.pptx;*.pdf;*.txt;*.epub;*.mobi;*.azw3|全部文件|*.*"
         };
 
         if (dialog.ShowDialog() != true)

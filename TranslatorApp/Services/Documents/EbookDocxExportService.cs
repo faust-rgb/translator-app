@@ -314,6 +314,10 @@ public sealed class EbookDocxExportService : IEbookDocxExportService
                 case "main":
                 case "body":
                 case "div":
+                case "aside":
+                case "header":
+                case "footer":
+                case "nav":
                     AppendContainer(body, element, listState, context, sourcePath, cancellationToken);
                     break;
                 case "figure":
@@ -326,6 +330,9 @@ public sealed class EbookDocxExportService : IEbookDocxExportService
                 case "dt":
                 case "dd":
                     AppendParagraph(body, element, CreateParagraphProperties(element, listState, false), listState, context, sourcePath);
+                    break;
+                case "pre":
+                    AppendPreformattedBlock(body, element, context, sourcePath);
                     break;
                 case "h1":
                 case "h2":
@@ -398,6 +405,19 @@ public sealed class EbookDocxExportService : IEbookDocxExportService
         if (!paragraph.Elements<Run>().Any())
         {
             return;
+        }
+
+        body.Append(paragraph);
+    }
+
+    private static void AppendPreformattedBlock(Body body, XElement element, ExportContext context, string sourcePath)
+    {
+        var properties = CreateParagraphProperties(element, new Stack<ListContext>(), false);
+        properties.Append(new SpacingBetweenLines { Before = "80", After = "80", Line = "240", LineRule = LineSpacingRuleValues.Auto });
+        var paragraph = CreateParagraphFromElement(element, properties, context, sourcePath);
+        if (!paragraph.Elements<Run>().Any())
+        {
+            paragraph.Append(new Run(new Text(element.Value ?? string.Empty) { Space = SpaceProcessingModeValues.Preserve }));
         }
 
         body.Append(paragraph);
@@ -648,6 +668,23 @@ public sealed class EbookDocxExportService : IEbookDocxExportService
                         continue;
                     }
 
+                    if (name == "math")
+                    {
+                        yield return CreateMathFallbackRun(element);
+                        continue;
+                    }
+
+                    if (name == "svg")
+                    {
+                        yield return CreateSvgFallbackRun(element);
+                        continue;
+                    }
+
+                    if (name is "rt" or "rp")
+                    {
+                        continue;
+                    }
+
                     if (IsBlockElement(name))
                     {
                         continue;
@@ -879,18 +916,57 @@ public sealed class EbookDocxExportService : IEbookDocxExportService
             new Text(text) { Space = SpaceProcessingModeValues.Preserve });
     }
 
+    private static Run CreateMathFallbackRun(XElement mathElement)
+    {
+        var label = mathElement.Attribute("alttext")?.Value ??
+                    mathElement.Attribute("aria-label")?.Value ??
+                    mathElement.Descendants().FirstOrDefault(x => x.Name.LocalName == "annotation")?.Value;
+        var text = string.IsNullOrWhiteSpace(label) ? "[公式]" : $"[公式] {label.Trim()}";
+        return new Run(
+            new RunProperties(new Italic()),
+            new Text(text) { Space = SpaceProcessingModeValues.Preserve });
+    }
+
+    private static Run CreateSvgFallbackRun(XElement svgElement)
+    {
+        var label = svgElement.Attribute("aria-label")?.Value ??
+                    svgElement.Descendants().FirstOrDefault(x => x.Name.LocalName is "title" or "desc")?.Value;
+        var text = string.IsNullOrWhiteSpace(label) ? "[矢量图]" : $"[矢量图] {label.Trim()}";
+        return new Run(
+            new RunProperties(new Italic()),
+            new Text(text) { Space = SpaceProcessingModeValues.Preserve });
+    }
+
     private static string ResolveResourcePath(string sourcePath, string relativeResourcePath)
     {
         var baseDirectory = Path.GetDirectoryName(sourcePath)!;
         var normalizedPath = relativeResourcePath.Replace('/', Path.DirectorySeparatorChar);
         var resolvedPath = Path.GetFullPath(Path.Combine(baseDirectory, normalizedPath));
-        var normalizedBaseDirectory = EnsureTrailingDirectorySeparator(Path.GetFullPath(baseDirectory));
-        if (!resolvedPath.StartsWith(normalizedBaseDirectory, StringComparison.OrdinalIgnoreCase))
+        var allowedRootDirectory = ResolveEpubRootDirectory(sourcePath) ?? baseDirectory;
+        var normalizedAllowedRootDirectory = EnsureTrailingDirectorySeparator(Path.GetFullPath(allowedRootDirectory));
+        if (!resolvedPath.StartsWith(normalizedAllowedRootDirectory, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException($"资源路径越界，已拒绝访问：{relativeResourcePath}");
         }
 
         return resolvedPath;
+    }
+
+    private static string? ResolveEpubRootDirectory(string sourcePath)
+    {
+        var current = Directory.GetParent(Path.GetDirectoryName(sourcePath)!);
+        while (current is not null)
+        {
+            var containerPath = Path.Combine(current.FullName, "META-INF", "container.xml");
+            if (File.Exists(containerPath))
+            {
+                return current.FullName;
+            }
+
+            current = current.Parent;
+        }
+
+        return null;
     }
 
     private static string EnsureTrailingDirectorySeparator(string path) =>
@@ -1164,7 +1240,7 @@ public sealed class EbookDocxExportService : IEbookDocxExportService
 
     private static bool IsBlockElement(string name) =>
         name is "p" or "div" or "section" or "article" or "main" or "ul" or "ol" or "li" or "table" or "tr" or "td" or "th" or
-            "h1" or "h2" or "h3" or "h4" or "h5" or "h6" or "blockquote" or "figure" or "figcaption";
+            "h1" or "h2" or "h3" or "h4" or "h5" or "h6" or "blockquote" or "figure" or "figcaption" or "pre" or "aside" or "header" or "footer" or "nav";
 
     private sealed record ListContext(bool Ordered)
     {

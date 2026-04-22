@@ -19,6 +19,10 @@ public sealed class EbookDocumentTranslator(
     : DocumentTranslatorBase(textTranslationService, logService)
 {
     private const int LongParagraphSplitThreshold = 420;
+    private const string XmlNamespace = "http://www.w3.org/XML/1998/namespace";
+    private const string EpubNamespace = "http://www.idpf.org/2007/ops";
+    private const string DcNamespace = "http://purl.org/dc/elements/1.1/";
+    private const string InjectedLanguageStyleId = "translatorapp-language-patch";
     private static readonly Regex SentenceSplitRegex = new(@"(?<=[\.!\?。！？；;:：])(?=\s|$)|(?<=\n)(?=\S)", RegexOptions.Compiled);
     private static readonly HashSet<string> BlockElementNames = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -38,7 +42,16 @@ public sealed class EbookDocumentTranslator(
         "caption",
         "td",
         "th",
-        "div"
+        "div",
+        "section",
+        "article",
+        "main",
+        "aside",
+        "header",
+        "footer",
+        "nav",
+        "pre",
+        "legend"
     };
 
     private static readonly HashSet<string> ExcludedAncestorNames = new(StringComparer.OrdinalIgnoreCase)
@@ -51,6 +64,32 @@ public sealed class EbookDocumentTranslator(
         "svg",
         "rt",
         "rp"
+    };
+
+    private static readonly HashSet<string> InlineSemanticElementNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "a",
+        "abbr",
+        "b",
+        "cite",
+        "code",
+        "del",
+        "dfn",
+        "em",
+        "i",
+        "ins",
+        "kbd",
+        "mark",
+        "q",
+        "s",
+        "samp",
+        "small",
+        "span",
+        "strong",
+        "sub",
+        "sup",
+        "u",
+        "var"
     };
 
     public override bool CanHandle(string extension) =>
@@ -156,7 +195,7 @@ public sealed class EbookDocumentTranslator(
         var packagePath = ResolvePackagePath(extractDirectory);
         var packageDocument = XDocument.Load(packagePath, LoadOptions.PreserveWhitespace);
         var bookTitle = ResolveBookTitle(packageDocument, context.Item.SourcePath);
-        var metadata = ResolveMetadata(packageDocument, bookTitle);
+        var metadata = ResolveMetadata(packageDocument, bookTitle, context.Settings.Translation.TargetLanguage);
         var contentFiles = ResolveContentDocumentPaths(packagePath, packageDocument);
         var cover = ResolveCoverInfo(packagePath, packageDocument, contentFiles);
         var navFiles = ResolveNavigationDocumentPaths(packagePath, packageDocument);
@@ -205,12 +244,29 @@ public sealed class EbookDocumentTranslator(
 
         foreach (var navigationDocument in navigationDocuments)
         {
-            processedUnits = await TranslateNavigationDocumentAsync(navigationDocument, headingMap, fullContentRangeSelected, context, bilingualSegments, totalUnits, processedUnits, resumeUnitIndex);
+            processedUnits = await TranslateNavigationDocumentAsync(navigationDocument, headingMap, context, bilingualSegments, totalUnits, processedUnits, resumeUnitIndex);
         }
 
         foreach (var ncxDocument in ncxDocuments)
         {
-            processedUnits = await TranslateNcxDocumentAsync(ncxDocument.Path, headingMap, fullContentRangeSelected, context, bilingualSegments, totalUnits, processedUnits, resumeUnitIndex);
+            processedUnits = await TranslateNcxDocumentAsync(ncxDocument.Path, headingMap, context, bilingualSegments, totalUnits, processedUnits, resumeUnitIndex);
+        }
+
+        var languageProfile = ResolveLanguageProfile(context.Settings.Translation.TargetLanguage);
+        ApplyDocumentLanguageAndLayout(
+            contentDocuments.Select(x => (x.Path, x.Document)).ToList(),
+            languageProfile,
+            updateDocumentLanguage: true);
+
+        ApplyDocumentLanguageAndLayout(
+            navigationDocuments.Select(x => (x.Path, x.Document)).ToList(),
+            languageProfile,
+            updateDocumentLanguage: true);
+
+        if (fullContentRangeSelected)
+        {
+            UpdatePackageLanguage(packageDocument, metadata.Language);
+            packageDocument.Save(packagePath, SaveOptions.DisableFormatting);
         }
 
         var translatedContentDocuments = selectedContentFiles
@@ -260,7 +316,7 @@ public sealed class EbookDocumentTranslator(
                     translatedFragments
                         .Skip(fragmentOffsets[index].Start)
                         .Take(fragmentOffsets[index].Count));
-                ApplyTranslatedText(unit.TextNodes, translated);
+                ApplyTranslatedText(unit, translated);
                 bilingualSegments.Add(new BilingualSegment(unit.ContextHint, unit.Original, translated));
 
                 var absoluteUnitIndex = processedUnits + batchStart + index + 1;
@@ -276,7 +332,6 @@ public sealed class EbookDocumentTranslator(
     private async Task<int> TranslateNavigationDocumentAsync(
         EpubContentDocument document,
         IReadOnlyDictionary<string, string> headingMap,
-        bool allowFallbackTranslation,
         TranslationJobContext context,
         List<BilingualSegment> bilingualSegments,
         int totalUnits,
@@ -300,7 +355,7 @@ public sealed class EbookDocumentTranslator(
             {
                 pendingUnits.Add((unit, absoluteIndex, synchronizedTitle));
             }
-            else if (allowFallbackTranslation)
+            else
             {
                 fallbackUnits.Add((unit, absoluteIndex));
             }
@@ -336,7 +391,7 @@ public sealed class EbookDocumentTranslator(
                 continue;
             }
 
-            ApplyTranslatedText(unit.Unit.TextNodes, translated);
+            ApplyTranslatedText(unit.Unit, translated);
             bilingualSegments.Add(new BilingualSegment(unit.Unit.ContextHint, unit.Unit.Original, translated));
             var progress = (int)Math.Round(unit.AbsoluteIndex * 100d / totalUnits);
             await context.ReportProgressAsync(progress, $"电子书目录 {unit.AbsoluteIndex}/{totalUnits}");
@@ -350,7 +405,6 @@ public sealed class EbookDocumentTranslator(
     private async Task<int> TranslateNcxDocumentAsync(
         string ncxPath,
         IReadOnlyDictionary<string, string> headingMap,
-        bool allowFallbackTranslation,
         TranslationJobContext context,
         List<BilingualSegment> bilingualSegments,
         int totalUnits,
@@ -391,7 +445,7 @@ public sealed class EbookDocumentTranslator(
             {
                 synchronizedElements.Add((element, absoluteIndex, synchronizedTitle));
             }
-            else if (allowFallbackTranslation)
+            else
             {
                 fallbackElements.Add((element, index, absoluteIndex));
             }
@@ -493,7 +547,7 @@ public sealed class EbookDocumentTranslator(
         var hint = string.Join(
             " ",
             element.Attribute("class")?.Value ?? string.Empty,
-            element.Attribute("epub:type")?.Value ?? string.Empty,
+            element.Attribute(XName.Get("type", EpubNamespace))?.Value ?? string.Empty,
             element.Attribute("type")?.Value ?? string.Empty,
             element.Attribute("id")?.Value ?? string.Empty);
 
@@ -688,18 +742,14 @@ public sealed class EbookDocumentTranslator(
 
         foreach (var element in candidates)
         {
-            var textNodes = element
-                .DescendantNodes()
-                .OfType<XText>()
-                .Where(node => !string.IsNullOrWhiteSpace(node.Value))
-                .Where(node => node.Ancestors().All(ancestor => !ExcludedAncestorNames.Contains(ancestor.Name.LocalName)))
-                .ToList();
+            var textNodes = CollectTranslatableTextNodes(element);
 
             if (textNodes.Count == 0)
             {
                 continue;
             }
 
+            var inlineSegments = BuildInlineSegments(element, textNodes);
             var original = string.Concat(textNodes.Select(x => x.Value));
             if (!LooksTranslatable(original))
             {
@@ -708,9 +758,14 @@ public sealed class EbookDocumentTranslator(
 
             var headingContext = ResolveHeadingContext(element, headingCandidates, documentTitle);
             var contextHint = BuildContextHint(fileName, element, headingContext, chapterIndexLabel);
-            var additionalRequirements = BuildAdditionalRequirements(element);
-            var fragments = BuildTranslationFragments(original, contextHint, additionalRequirements);
-            units.Add(new EpubTranslationUnit(textNodes, original, contextHint, additionalRequirements, fragments));
+            var translationSource = BuildTranslationSource(inlineSegments);
+            var additionalRequirements = BuildAdditionalRequirements(element, inlineSegments.Count > 1);
+            var fragments = BuildTranslationFragments(
+                translationSource,
+                contextHint,
+                additionalRequirements,
+                preserveWholeText: inlineSegments.Count > 1);
+            units.Add(new EpubTranslationUnit(element, textNodes, inlineSegments, original, contextHint, additionalRequirements, fragments));
         }
 
         return units;
@@ -718,7 +773,7 @@ public sealed class EbookDocumentTranslator(
 
     private static bool IsTranslatableLeafElement(XElement element)
     {
-        if (!BlockElementNames.Contains(element.Name.LocalName))
+        if (!CanActAsTranslatableContainer(element))
         {
             return false;
         }
@@ -728,7 +783,10 @@ public sealed class EbookDocumentTranslator(
             return false;
         }
 
-        return !element.Descendants().Any(descendant => descendant != element && BlockElementNames.Contains(descendant.Name.LocalName));
+        return !element.Descendants().Any(descendant =>
+            descendant != element &&
+            CanActAsTranslatableContainer(descendant) &&
+            descendant.Ancestors().TakeWhile(ancestor => ancestor != element).All(ancestor => !ExcludedAncestorNames.Contains(ancestor.Name.LocalName)));
     }
 
     private static bool LooksTranslatable(string value)
@@ -739,6 +797,43 @@ public sealed class EbookDocumentTranslator(
         }
 
         return value.Trim().Any(char.IsLetter);
+    }
+
+    private static List<XText> CollectTranslatableTextNodes(XElement element)
+    {
+        var allowCodeText = element.Name.LocalName is "pre" or "code";
+        var allowRubyBase = element.Name.LocalName == "ruby";
+
+        return element
+            .DescendantNodes()
+            .OfType<XText>()
+            .Where(node => !string.IsNullOrWhiteSpace(node.Value))
+            .Where(node => node.Ancestors().All(ancestor =>
+            {
+                var name = ancestor.Name.LocalName;
+                if (allowCodeText && ancestor == element && name is "pre" or "code")
+                {
+                    return true;
+                }
+
+                if (allowCodeText && ancestor != element && name is "pre" or "code")
+                {
+                    return true;
+                }
+
+                if (allowRubyBase && ancestor == element && name == "ruby")
+                {
+                    return true;
+                }
+
+                if (allowRubyBase && name is "rt" or "rp")
+                {
+                    return false;
+                }
+
+                return !ExcludedAncestorNames.Contains(name);
+            }))
+            .ToList();
     }
 
     private static string ResolveDocumentTitle(XDocument document)
@@ -822,10 +917,12 @@ public sealed class EbookDocumentTranslator(
         "figcaption" or "caption" => "图表说明",
         "td" or "th" => "表格单元格",
         "blockquote" => "引用块",
+        "pre" => "预格式化代码块",
+        "ruby" => "注音文本",
         _ => "正文块"
     };
 
-    private static string BuildAdditionalRequirements(XElement element)
+    private static string BuildAdditionalRequirements(XElement element, bool preserveInlineBoundaries)
     {
         var requirements = new List<string>();
         switch (element.Name.LocalName)
@@ -855,6 +952,13 @@ public sealed class EbookDocumentTranslator(
             case "blockquote":
                 requirements.Add("类型：引用块。请保留引用语气和段落边界，不要混入解释性说明。");
                 break;
+            case "pre":
+            case "code":
+                requirements.Add("类型：预格式化代码/命令块。请严格保留缩进、换行、命令、标点、变量、占位符和代码结构；只翻译其中明确属于自然语言说明、注释或提示文本的部分。");
+                break;
+            case "ruby":
+                requirements.Add("类型：注音文本。请只翻译正文可见基底文字，不要输出注音标记或括号化读音。");
+                break;
             default:
                 requirements.Add("类型：电子书正文。请保留段落边界、内联强调边界和链接文本边界，不要无故扩写。");
                 break;
@@ -870,15 +974,26 @@ public sealed class EbookDocumentTranslator(
             requirements.Add("当前片段包含强调样式。请尽量保持强调部分的语义边界，不要把强调片段并入相邻短语。");
         }
 
+        if (element.Descendants().Any(x => x.Name.LocalName is "math" or "svg"))
+        {
+            requirements.Add("当前片段附近包含公式或矢量图内容。请只翻译普通文字，不要把公式、坐标标签、路径数据或图形指令改写进译文。");
+        }
+
+        if (preserveInlineBoundaries)
+        {
+            requirements.Add("当前片段包含内联样式边界或链接边界。请严格保留类似 [[SEG_001]] 的分段标记及其顺序，只翻译标记之间的可见文本，不要增删、改写或重排这些标记。");
+        }
+
         return string.Join("\n", requirements);
     }
 
     private static IReadOnlyList<EpubTranslationFragment> BuildTranslationFragments(
         string original,
         string contextHint,
-        string additionalRequirements)
+        string additionalRequirements,
+        bool preserveWholeText = false)
     {
-        var fragments = SplitLongTextForTranslation(original)
+        var fragments = (preserveWholeText ? new[] { original } : SplitLongTextForTranslation(original))
             .Select(fragment => new EpubTranslationFragment(fragment, contextHint, additionalRequirements))
             .ToList();
 
@@ -929,7 +1044,221 @@ public sealed class EbookDocumentTranslator(
         return merged.Count == 0 ? new[] { original } : merged;
     }
 
-    private static void ApplyTranslatedText(IReadOnlyList<XText> textNodes, string translated)
+    private static IReadOnlyList<EpubInlineSegment> BuildInlineSegments(XElement container, IReadOnlyList<XText> textNodes)
+    {
+        var segments = new List<EpubInlineSegment>();
+        var currentNodes = new List<XText>();
+        var currentSignature = string.Empty;
+
+        foreach (var textNode in textNodes)
+        {
+            var signature = BuildInlineContextSignature(textNode, container);
+            if (currentNodes.Count > 0 && !string.Equals(currentSignature, signature, StringComparison.Ordinal))
+            {
+                segments.Add(new EpubInlineSegment(
+                    currentNodes.ToList(),
+                    currentSignature,
+                    string.Concat(currentNodes.Select(x => x.Value))));
+                currentNodes.Clear();
+            }
+
+            currentSignature = signature;
+            currentNodes.Add(textNode);
+        }
+
+        if (currentNodes.Count > 0)
+        {
+            segments.Add(new EpubInlineSegment(
+                currentNodes.ToList(),
+                currentSignature,
+                string.Concat(currentNodes.Select(x => x.Value))));
+        }
+
+        return segments;
+    }
+
+    private static string BuildInlineContextSignature(XText textNode, XElement container)
+    {
+        var relevantAncestors = textNode
+            .Ancestors()
+            .TakeWhile(ancestor => ancestor != container)
+            .Where(ancestor => InlineSemanticElementNames.Contains(ancestor.Name.LocalName))
+            .Reverse()
+            .Select(BuildInlineElementDescriptor);
+
+        return string.Join("/", relevantAncestors);
+    }
+
+    private static string BuildInlineElementDescriptor(XElement element)
+    {
+        var parts = new List<string> { element.Name.LocalName };
+        AppendIfPresent(parts, "class", element.Attribute("class")?.Value);
+        AppendIfPresent(parts, "style", element.Attribute("style")?.Value);
+        AppendIfPresent(parts, "href", element.Attribute("href")?.Value);
+        AppendIfPresent(parts, "lang", element.Attribute("lang")?.Value);
+        AppendIfPresent(parts, "xml:lang", element.Attribute(XName.Get("lang", XmlNamespace))?.Value);
+        return string.Join("|", parts);
+    }
+
+    private static void AppendIfPresent(List<string> parts, string name, string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            parts.Add($"{name}={value.Trim()}");
+        }
+    }
+
+    private static string BuildTranslationSource(IReadOnlyList<EpubInlineSegment> inlineSegments)
+    {
+        if (inlineSegments.Count <= 1)
+        {
+            return inlineSegments.Count == 0 ? string.Empty : inlineSegments[0].OriginalText;
+        }
+
+        var builder = new StringBuilder();
+        for (var index = 0; index < inlineSegments.Count; index++)
+        {
+            builder.Append(BuildSegmentMarker(index + 1));
+            builder.Append(inlineSegments[index].OriginalText);
+        }
+
+        return builder.ToString();
+    }
+
+    private static string BuildSegmentMarker(int index) => $"[[SEG_{index:000}]]";
+
+    private static void ApplyTranslatedText(EpubTranslationUnit unit, string translated)
+    {
+        if (unit.TextNodes.Count == 0)
+        {
+            return;
+        }
+
+        if (unit.InlineSegments.Count <= 1)
+        {
+            ApplyTranslatedTextToNodes(unit.TextNodes, translated);
+            RemoveRubyAnnotationsIfNeeded(unit.ContainerElement);
+            return;
+        }
+
+        if (TryApplyMarkedSegmentTranslation(unit.InlineSegments, translated))
+        {
+            RemoveRubyAnnotationsIfNeeded(unit.ContainerElement);
+            return;
+        }
+
+        var segments = TextDistributionHelper.Distribute(
+            translated,
+            unit.InlineSegments.Select(segment => Math.Max(1, segment.OriginalText.Trim().Length)).ToList());
+
+        for (var index = 0; index < unit.InlineSegments.Count; index++)
+        {
+            ApplyTranslatedTextToNodes(unit.InlineSegments[index].TextNodes, segments[index]);
+        }
+
+        RemoveRubyAnnotationsIfNeeded(unit.ContainerElement);
+    }
+
+    private static void RemoveRubyAnnotationsIfNeeded(XElement containerElement)
+    {
+        if (!string.Equals(containerElement.Name.LocalName, "ruby", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        foreach (var annotation in containerElement
+                     .Descendants()
+                     .Where(x => x.Name.LocalName is "rt" or "rp")
+                     .ToList())
+        {
+            annotation.Remove();
+        }
+    }
+
+    private static bool TryApplyMarkedSegmentTranslation(IReadOnlyList<EpubInlineSegment> inlineSegments, string translated)
+    {
+        var parsedSegments = new string[inlineSegments.Count];
+        var foundAnyMarker = false;
+
+        for (var index = 0; index < inlineSegments.Count; index++)
+        {
+            var marker = BuildSegmentMarker(index + 1);
+            var start = translated.IndexOf(marker, StringComparison.Ordinal);
+            if (start < 0)
+            {
+                return false;
+            }
+
+            foundAnyMarker = true;
+            start += marker.Length;
+            var end = index == inlineSegments.Count - 1
+                ? translated.Length
+                : translated.IndexOf(BuildSegmentMarker(index + 2), start, StringComparison.Ordinal);
+            if (end < 0)
+            {
+                return false;
+            }
+
+            parsedSegments[index] = translated[start..end];
+        }
+
+        if (!foundAnyMarker)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < inlineSegments.Count; index++)
+        {
+            ApplyTranslatedTextToNodes(inlineSegments[index].TextNodes, parsedSegments[index]);
+        }
+
+        return true;
+    }
+
+    private static bool CanActAsTranslatableContainer(XElement element)
+    {
+        if (BlockElementNames.Contains(element.Name.LocalName))
+        {
+            return true;
+        }
+
+        if (InlineSemanticElementNames.Contains(element.Name.LocalName) &&
+            !string.Equals(element.Name.LocalName, "span", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(element.Name.LocalName, "ruby", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var hint = string.Join(
+            " ",
+            element.Attribute("class")?.Value ?? string.Empty,
+            element.Attribute("id")?.Value ?? string.Empty,
+            element.Attribute("role")?.Value ?? string.Empty,
+            element.Attribute(XName.Get("type", EpubNamespace))?.Value ?? string.Empty,
+            element.Attribute("type")?.Value ?? string.Empty,
+            element.Attribute("aria-label")?.Value ?? string.Empty);
+
+        return hint.Contains("chapter", StringComparison.OrdinalIgnoreCase) ||
+               hint.Contains("title", StringComparison.OrdinalIgnoreCase) ||
+               hint.Contains("heading", StringComparison.OrdinalIgnoreCase) ||
+               hint.Contains("subtitle", StringComparison.OrdinalIgnoreCase) ||
+               hint.Contains("subhead", StringComparison.OrdinalIgnoreCase) ||
+               hint.Contains("paragraph", StringComparison.OrdinalIgnoreCase) ||
+               hint.Contains("para", StringComparison.OrdinalIgnoreCase) ||
+               hint.Contains("caption", StringComparison.OrdinalIgnoreCase) ||
+               hint.Contains("quote", StringComparison.OrdinalIgnoreCase) ||
+               hint.Contains("note", StringComparison.OrdinalIgnoreCase) ||
+               hint.Contains("summary", StringComparison.OrdinalIgnoreCase) ||
+               hint.Contains("abstract", StringComparison.OrdinalIgnoreCase) ||
+               hint.Contains("epigraph", StringComparison.OrdinalIgnoreCase) ||
+               hint.Contains("intro", StringComparison.OrdinalIgnoreCase) ||
+               hint.Contains("prologue", StringComparison.OrdinalIgnoreCase) ||
+               hint.Contains("afterword", StringComparison.OrdinalIgnoreCase) ||
+               (string.Equals(element.Name.LocalName, "span", StringComparison.OrdinalIgnoreCase) &&
+                element.Descendants().Any(x => x.Name.LocalName == "br"));
+    }
+
+    private static void ApplyTranslatedTextToNodes(IReadOnlyList<XText> textNodes, string translated)
     {
         if (textNodes.Count == 0)
         {
@@ -950,6 +1279,204 @@ public sealed class EbookDocumentTranslator(
         {
             textNodes[index].Value = WhitespacePreservationHelper.PreserveEdgeWhitespace(textNodes[index].Value, segments[index]);
         }
+    }
+
+    private static void ApplyDocumentLanguageAndLayout(
+        IReadOnlyList<(string Path, XDocument Document)> documents,
+        EpubLanguageProfile languageProfile,
+        bool updateDocumentLanguage)
+    {
+        foreach (var (path, document) in documents)
+        {
+            if (document.Root is null)
+            {
+                continue;
+            }
+
+            if (updateDocumentLanguage)
+            {
+                UpdateDocumentLanguageAttributes(document, languageProfile);
+            }
+
+            InjectLanguageLayoutPatch(document, languageProfile);
+            document.Save(path, SaveOptions.DisableFormatting);
+        }
+    }
+
+    private static void UpdateDocumentLanguageAttributes(XDocument document, EpubLanguageProfile languageProfile)
+    {
+        if (string.IsNullOrWhiteSpace(languageProfile.Bcp47))
+        {
+            return;
+        }
+
+        var html = document.Root is not null &&
+                   string.Equals(document.Root.Name.LocalName, "html", StringComparison.OrdinalIgnoreCase)
+            ? document.Root
+            : document.Descendants().FirstOrDefault(x => string.Equals(x.Name.LocalName, "html", StringComparison.OrdinalIgnoreCase));
+        if (html is not null)
+        {
+            SetLanguageAttributes(html, languageProfile);
+        }
+
+        var body = document
+            .Descendants()
+            .FirstOrDefault(x => string.Equals(x.Name.LocalName, "body", StringComparison.OrdinalIgnoreCase));
+        if (body is not null)
+        {
+            SetLanguageAttributes(body, languageProfile);
+        }
+    }
+
+    private static void SetLanguageAttributes(XElement element, EpubLanguageProfile languageProfile)
+    {
+        element.SetAttributeValue("lang", languageProfile.Bcp47);
+        element.SetAttributeValue(XName.Get("lang", XmlNamespace), languageProfile.Bcp47);
+        if (languageProfile.Direction is not null)
+        {
+            element.SetAttributeValue("dir", languageProfile.Direction);
+        }
+        else
+        {
+            element.Attribute("dir")?.Remove();
+        }
+    }
+
+    private static void InjectLanguageLayoutPatch(XDocument document, EpubLanguageProfile languageProfile)
+    {
+        var css = BuildLanguageLayoutCss(languageProfile);
+        if (string.IsNullOrWhiteSpace(css))
+        {
+            return;
+        }
+
+        var head = document
+            .Descendants()
+            .FirstOrDefault(x => string.Equals(x.Name.LocalName, "head", StringComparison.OrdinalIgnoreCase));
+        if (head is null)
+        {
+            return;
+        }
+
+        var styleElement = head.Elements()
+            .FirstOrDefault(x =>
+                string.Equals(x.Name.LocalName, "style", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(x.Attribute("id")?.Value, InjectedLanguageStyleId, StringComparison.Ordinal));
+
+        if (styleElement is null)
+        {
+            styleElement = new XElement(head.Name.Namespace + "style",
+                new XAttribute("id", InjectedLanguageStyleId),
+                new XAttribute("type", "text/css"));
+            head.Add(styleElement);
+        }
+
+        styleElement.Value = css;
+    }
+
+    private static string BuildLanguageLayoutCss(EpubLanguageProfile languageProfile)
+    {
+        var rules = new List<string>();
+        if (languageProfile.IsCjk && !string.IsNullOrWhiteSpace(languageProfile.Bcp47))
+        {
+            rules.Add(
+                $"html[lang|=\"{languageProfile.Bcp47.Split('-')[0]}\"], body[lang|=\"{languageProfile.Bcp47.Split('-')[0]}\"] " +
+                "{ line-break: auto; -webkit-hyphens: none; hyphens: none; word-break: normal; overflow-wrap: anywhere; }");
+            rules.Add(
+                $"html[lang|=\"{languageProfile.Bcp47.Split('-')[0]}\"] h1, " +
+                $"html[lang|=\"{languageProfile.Bcp47.Split('-')[0]}\"] h2, " +
+                $"html[lang|=\"{languageProfile.Bcp47.Split('-')[0]}\"] h3, " +
+                $"html[lang|=\"{languageProfile.Bcp47.Split('-')[0]}\"] h4, " +
+                $"html[lang|=\"{languageProfile.Bcp47.Split('-')[0]}\"] h5, " +
+                $"html[lang|=\"{languageProfile.Bcp47.Split('-')[0]}\"] h6, " +
+                $"html[lang|=\"{languageProfile.Bcp47.Split('-')[0]}\"] p, " +
+                $"html[lang|=\"{languageProfile.Bcp47.Split('-')[0]}\"] li, " +
+                $"html[lang|=\"{languageProfile.Bcp47.Split('-')[0]}\"] blockquote, " +
+                $"html[lang|=\"{languageProfile.Bcp47.Split('-')[0]}\"] figcaption, " +
+                $"html[lang|=\"{languageProfile.Bcp47.Split('-')[0]}\"] caption, " +
+                $"html[lang|=\"{languageProfile.Bcp47.Split('-')[0]}\"] td, " +
+                $"html[lang|=\"{languageProfile.Bcp47.Split('-')[0]}\"] th {{ overflow-wrap: anywhere; }}");
+            rules.Add(
+                $"html[lang|=\"{languageProfile.Bcp47.Split('-')[0]}\"] ruby {{ ruby-align: center; }}");
+        }
+
+        if (string.Equals(languageProfile.Direction, "rtl", StringComparison.Ordinal))
+        {
+            rules.Add("html[dir=\"rtl\"], body[dir=\"rtl\"] { direction: rtl; unicode-bidi: isolate; }");
+        }
+
+        return string.Join("\n", rules);
+    }
+
+    private static EpubLanguageProfile ResolveLanguageProfile(string? targetLanguage)
+    {
+        var normalized = (targetLanguage ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return new EpubLanguageProfile(string.Empty, false, null);
+        }
+
+        return normalized switch
+        {
+            var value when value.Contains("中文", StringComparison.OrdinalIgnoreCase) ||
+                           value.Contains("汉语", StringComparison.OrdinalIgnoreCase) ||
+                           value.Contains("简体", StringComparison.OrdinalIgnoreCase) => new EpubLanguageProfile("zh-CN", true, "ltr"),
+            var value when value.Contains("繁體", StringComparison.OrdinalIgnoreCase) ||
+                           value.Contains("繁体", StringComparison.OrdinalIgnoreCase) => new EpubLanguageProfile("zh-Hant", true, "ltr"),
+            var value when value.Contains("日语", StringComparison.OrdinalIgnoreCase) ||
+                           value.Contains("日文", StringComparison.OrdinalIgnoreCase) ||
+                           value.Contains("Japanese", StringComparison.OrdinalIgnoreCase) => new EpubLanguageProfile("ja", true, "ltr"),
+            var value when value.Contains("韩语", StringComparison.OrdinalIgnoreCase) ||
+                           value.Contains("韩文", StringComparison.OrdinalIgnoreCase) ||
+                           value.Contains("Korean", StringComparison.OrdinalIgnoreCase) => new EpubLanguageProfile("ko", true, "ltr"),
+            var value when value.Contains("英语", StringComparison.OrdinalIgnoreCase) ||
+                           value.Contains("英文", StringComparison.OrdinalIgnoreCase) ||
+                           value.Contains("English", StringComparison.OrdinalIgnoreCase) => new EpubLanguageProfile("en", false, "ltr"),
+            var value when value.Contains("法语", StringComparison.OrdinalIgnoreCase) ||
+                           value.Contains("French", StringComparison.OrdinalIgnoreCase) => new EpubLanguageProfile("fr", false, "ltr"),
+            var value when value.Contains("德语", StringComparison.OrdinalIgnoreCase) ||
+                           value.Contains("German", StringComparison.OrdinalIgnoreCase) => new EpubLanguageProfile("de", false, "ltr"),
+            var value when value.Contains("西班牙", StringComparison.OrdinalIgnoreCase) ||
+                           value.Contains("Spanish", StringComparison.OrdinalIgnoreCase) => new EpubLanguageProfile("es", false, "ltr"),
+            var value when value.Contains("俄语", StringComparison.OrdinalIgnoreCase) ||
+                           value.Contains("Russian", StringComparison.OrdinalIgnoreCase) => new EpubLanguageProfile("ru", false, "ltr"),
+            var value when value.Contains("阿拉伯", StringComparison.OrdinalIgnoreCase) ||
+                           value.Contains("Arabic", StringComparison.OrdinalIgnoreCase) => new EpubLanguageProfile("ar", false, "rtl"),
+            var value when value.Contains("希伯来", StringComparison.OrdinalIgnoreCase) ||
+                           value.Contains("Hebrew", StringComparison.OrdinalIgnoreCase) => new EpubLanguageProfile("he", false, "rtl"),
+            var value when value.Contains("波斯", StringComparison.OrdinalIgnoreCase) ||
+                           value.Contains("Persian", StringComparison.OrdinalIgnoreCase) => new EpubLanguageProfile("fa", false, "rtl"),
+            var value when value.Contains("乌尔都", StringComparison.OrdinalIgnoreCase) ||
+                           value.Contains("Urdu", StringComparison.OrdinalIgnoreCase) => new EpubLanguageProfile("ur", false, "rtl"),
+            _ => new EpubLanguageProfile(normalized, false, null)
+        };
+    }
+
+    private static void UpdatePackageLanguage(XDocument packageDocument, string language)
+    {
+        if (string.IsNullOrWhiteSpace(language))
+        {
+            return;
+        }
+
+        var existingLanguage = packageDocument
+            .Descendants()
+            .FirstOrDefault(x => string.Equals(x.Name.LocalName, "language", StringComparison.OrdinalIgnoreCase));
+        if (existingLanguage is not null)
+        {
+            existingLanguage.Value = language;
+            return;
+        }
+
+        var metadataElement = packageDocument
+            .Descendants()
+            .FirstOrDefault(x => string.Equals(x.Name.LocalName, "metadata", StringComparison.OrdinalIgnoreCase));
+        if (metadataElement is null)
+        {
+            return;
+        }
+
+        metadataElement.Add(new XElement(XName.Get("language", DcNamespace), language));
     }
 
     private static string ResolvePackagePath(string extractDirectory)
@@ -983,7 +1510,7 @@ public sealed class EbookDocumentTranslator(
             : title;
     }
 
-    private static EpubMetadata ResolveMetadata(XDocument packageDocument, string fallbackTitle)
+    private static EpubMetadata ResolveMetadata(XDocument packageDocument, string fallbackTitle, string? targetLanguage)
     {
         var metadataElement = packageDocument.Descendants().FirstOrDefault(x => x.Name.LocalName == "metadata");
 
@@ -1002,11 +1529,17 @@ public sealed class EbookDocumentTranslator(
             .Cast<string>()
             .ToList() ?? [];
 
+        var resolvedLanguage = ResolveLanguageProfile(targetLanguage).Bcp47;
+        if (string.IsNullOrWhiteSpace(resolvedLanguage))
+        {
+            resolvedLanguage = FirstValue("language");
+        }
+
         return new EpubMetadata(
             string.IsNullOrWhiteSpace(FirstValue("title")) ? fallbackTitle : FirstValue("title"),
             creators,
             FirstValue("publisher"),
-            FirstValue("language"),
+            resolvedLanguage,
             FirstValue("date", "modified"),
             FirstValue("identifier"),
             FirstValue("description"));
@@ -1195,8 +1728,15 @@ public sealed class EbookDocumentTranslator(
 
     private sealed record EpubTranslationFragment(string Original, string ContextHint, string AdditionalRequirements);
 
-    private sealed record EpubTranslationUnit(
+    private sealed record EpubInlineSegment(
         IReadOnlyList<XText> TextNodes,
+        string ContextSignature,
+        string OriginalText);
+
+    private sealed record EpubTranslationUnit(
+        XElement ContainerElement,
+        IReadOnlyList<XText> TextNodes,
+        IReadOnlyList<EpubInlineSegment> InlineSegments,
         string Original,
         string ContextHint,
         string AdditionalRequirements,
@@ -1227,6 +1767,8 @@ public sealed class EbookDocumentTranslator(
         EpubCoverInfo? Cover,
         EpubMetadata Metadata,
         IReadOnlyList<EpubExportDocument> ContentDocuments);
+
+    private sealed record EpubLanguageProfile(string Bcp47, bool IsCjk, string? Direction);
 
     private sealed record NcxDocument(string Path, int UnitCount);
 }

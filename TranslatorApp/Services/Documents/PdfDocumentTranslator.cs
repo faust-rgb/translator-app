@@ -226,6 +226,11 @@ public sealed class PdfDocumentTranslator(
             requirements.Add("当前片段来自 OCR。请结合上下文纠正明显断词，但不要臆造原文中不存在的数字、公式或专有名词。");
         }
 
+        if (LooksLikeReferenceEntry(block.Text))
+        {
+            requirements.Add("类型：参考文献。请保留作者名、年份、期刊/会议名称、卷期、页码、DOI、URL、arXiv 编号和编号样式；仅翻译可翻译的说明性文字，不要改写引用格式。");
+        }
+
         return string.Join("\n", requirements);
     }
 
@@ -364,6 +369,7 @@ public sealed class PdfDocumentTranslator(
     private static bool CanBeGroupedForParagraphTranslation(PdfTextBlock block) =>
         block.BlockType == PdfBlockType.Normal &&
         block.Region == PdfBlockRegion.Body &&
+        !LooksLikeReferenceEntry(block.Text) &&
         CanUseAsTranslationContext(block);
 
     private static bool CanBeGroupedWithParagraph(PdfTextBlock previous, PdfTextBlock current, PdfLayoutHeuristics heuristics)
@@ -814,6 +820,7 @@ public sealed class PdfDocumentTranslator(
     private static bool CanUseAsTranslationContext(PdfTextBlock block) =>
         !string.IsNullOrWhiteSpace(block.Text) &&
         !IsFormulaLikeBlock(block) &&
+        !LooksLikeReferenceEntry(block.Text) &&
         block.BlockType is not PdfBlockType.HeaderFooter and not PdfBlockType.Footnote &&
         block.Region is not PdfBlockRegion.Margin;
 
@@ -1120,6 +1127,24 @@ public sealed class PdfDocumentTranslator(
             return false;
         }
 
+        var previousIsReferenceEntry = LooksLikeReferenceEntry(previous.Text);
+        var currentStartsReferenceEntry = StartsReferenceEntry(currentLineText);
+        if (currentStartsReferenceEntry)
+        {
+            return false;
+        }
+
+        if (previousIsReferenceEntry)
+        {
+            var referenceLineHeight = Math.Max(previous.LineHeight, currentLineHeight);
+            var referenceGap = previous.Bottom - currentRect.Top;
+            var horizontallyRelated = Math.Abs(previous.Left - currentRect.Left) < Math.Max(18, referenceLineHeight * 1.2) ||
+                                      OverlapRatio(previous.Left, previous.Right, currentRect.Left, currentRect.Right) > 0.45;
+            return referenceGap >= -2 &&
+                   referenceGap <= referenceLineHeight * Math.Max(1.5, heuristics.LineMergeMaxVerticalGapRatio) &&
+                   horizontallyRelated;
+        }
+
         var mergeLineHeight = Math.Max(previous.LineHeight, currentLineHeight);
         var verticalGap = previous.Bottom - currentRect.Top;
         if (verticalGap < -2 || verticalGap > mergeLineHeight * heuristics.LineMergeMaxVerticalGapRatio)
@@ -1191,6 +1216,10 @@ public sealed class PdfDocumentTranslator(
                 if (prevEndsWithCjk && currStartsWithCjk)
                 {
                     // CJK之间不加空格
+                    result += currWord.Text;
+                }
+                else if (ShouldJoinWithoutSpace(prevWord.Text, currWord.Text))
+                {
                     result += currWord.Text;
                 }
                 else if (gap > avgCharWidth * 2.5)
@@ -2373,6 +2402,29 @@ public sealed class PdfDocumentTranslator(
             return false;
         }
 
+        var previousIsReferenceEntry = LooksLikeReferenceEntry(previous.Text);
+        var currentStartsReferenceEntry = StartsReferenceEntry(current.Text);
+        if (currentStartsReferenceEntry)
+        {
+            return false;
+        }
+
+        if (previousIsReferenceEntry)
+        {
+            if (current.BlockType is PdfBlockType.Title or PdfBlockType.Caption or PdfBlockType.HeaderFooter or PdfBlockType.Footnote)
+            {
+                return false;
+            }
+
+            var referenceLineHeight = Math.Max(previous.LineHeight, current.LineHeight);
+            var referenceGap = previous.Bottom - current.Top;
+            var referenceSameColumn = Math.Abs(previous.Left - current.Left) < Math.Max(18, referenceLineHeight * 1.2) ||
+                                      OverlapRatio(previous.Left, previous.Right, current.Left, current.Right) > 0.45;
+            return referenceGap >= -2 &&
+                   referenceGap < referenceLineHeight * 1.6 &&
+                   referenceSameColumn;
+        }
+
         // 不同类型的块不合并（如列表和段落）
         if (previous.BlockType != PdfBlockType.Normal && current.BlockType != PdfBlockType.Normal &&
             previous.BlockType != current.BlockType)
@@ -2595,6 +2647,39 @@ public sealed class PdfDocumentTranslator(
         return index < trimmed.Length && char.IsLower(trimmed[index]);
     }
 
+    private static bool ShouldJoinWithoutSpace(string previousText, string currentText)
+    {
+        var previousTrimmed = previousText.TrimEnd();
+        var currentTrimmed = currentText.TrimStart();
+        if (string.IsNullOrEmpty(previousTrimmed) || string.IsNullOrEmpty(currentTrimmed))
+        {
+            return false;
+        }
+
+        var previousLast = previousTrimmed[^1];
+        var currentFirst = currentTrimmed[0];
+        if (IsOpeningPunctuation(previousLast) || IsClosingPunctuation(currentFirst))
+        {
+            return true;
+        }
+
+        if (previousLast is '/' or '@' or '#')
+        {
+            return true;
+        }
+
+        if (currentFirst is '/' or '%' or '\'' || currentTrimmed.StartsWith("'s", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsOpeningPunctuation(char ch) => "([{\"'“‘".Contains(ch);
+
+    private static bool IsClosingPunctuation(char ch) => ".,;:!?)]}%\"'”’".Contains(ch);
+
     private static string GetTrailingAsciiLetters(string text)
     {
         if (string.IsNullOrEmpty(text))
@@ -2662,6 +2747,36 @@ public sealed class PdfDocumentTranslator(
     private static bool IsAsciiLetter(char ch) => ch is >= 'A' and <= 'Z' or >= 'a' and <= 'z';
 
     private static bool IsAsciiLower(char ch) => ch is >= 'a' and <= 'z';
+
+    private static bool StartsReferenceEntry(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        return System.Text.RegularExpressions.Regex.IsMatch(
+            text.TrimStart(),
+            @"^(?:\[\d{1,4}(?:\s*[-,]\s*\d{1,4})?\]|\(\d{1,4}\)|\d{1,4}[\.\)])\s+");
+    }
+
+    private static bool LooksLikeReferenceEntry(string text)
+    {
+        if (!StartsReferenceEntry(text))
+        {
+            return false;
+        }
+
+        var trimmed = text.Trim();
+        if (trimmed.Length < 18)
+        {
+            return false;
+        }
+
+        return System.Text.RegularExpressions.Regex.IsMatch(trimmed, @"\b(19|20)\d{2}[a-z]?\b") ||
+               System.Text.RegularExpressions.Regex.IsMatch(trimmed, @"\b(?:doi|arxiv|vol\.?|pp\.?|pages?)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase) ||
+               System.Text.RegularExpressions.Regex.IsMatch(trimmed, @"\b(?:Proceedings|Journal|Conference|Transactions)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
 
     // ========================================================================
     // 公式检测

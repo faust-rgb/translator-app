@@ -60,6 +60,7 @@ public partial class App : Application
                 services.AddSingleton<IDocumentTranslator, ExcelDocumentTranslator>();
                 services.AddSingleton<IDocumentTranslator, PowerPointDocumentTranslator>();
                 services.AddSingleton<IDocumentTranslator, PdfDocumentTranslator>();
+                services.AddSingleton<IDocumentTranslator, TextDocumentTranslator>();
                 services.AddSingleton<IEbookConversionService, CalibreEbookConversionService>();
                 services.AddSingleton<IEbookDocxExportService, EbookDocxExportService>();
                 services.AddSingleton<IDocumentTranslator, EbookDocumentTranslator>();

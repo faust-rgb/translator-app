@@ -92,7 +92,7 @@
                     <TextBlock Margin="0,2,0,0"
                                Foreground="#FF5F5A4E"
                                TextWrapping="Wrap"
-                               Text="支持 DOCX / XLSX / PPTX / PDF / EPUB / MOBI / AZW3。只把文本送给大模型，文档处理在本地完成。电子书会在保留结构后输出为 EPUB 或 DOCX。" />
+                               Text="支持 DOCX / XLSX / PPTX / PDF / TXT / EPUB / MOBI / AZW3。只把文本送给大模型，文档处理在本地完成。电子书会在保留结构后输出为 EPUB 或 DOCX。" />
                 </StackPanel>
 
                 <StackPanel Grid.Column="1" Margin="8,0,10,0">

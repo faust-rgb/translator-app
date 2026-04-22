@@ -45,6 +45,10 @@
   - block-level parallelism
   - global remote-request throttling
   Default safe mode is `1/1/1`
+- Same-file request reduction is now stronger:
+  - repeated translation requests with identical prompt context are cached in-process to reduce duplicate remote calls
+  - short blocks from the same file can now be packed into a single remote request with per-block markers and automatic fallback to one-by-one calls if unpacking looks unsafe
+  - packing is more aggressive for fragment-heavy cases such as EPUB nav items, short Excel cells, short PowerPoint text boxes, and short Word headings/list items/table cells
 - Stream preview panel now wraps text to the visible width
 - Task list context menu now selects the right-clicked row before executing actions
 - Native ebook pipeline added:
@@ -54,10 +58,15 @@
   - EPUB translation units now carry chapter context plus block-type-specific guidance for headings, lists, captions, table cells, and quotes
   - long EPUB paragraphs are split on sentence-like boundaries before translation and merged back into the original XHTML nodes
   - EPUB resume now reuses a stable on-disk workspace so interrupted jobs can continue from preserved extracted content instead of restarting the whole book
-  - repeated translation requests with identical prompt context are cached in-process to reduce duplicate remote calls
   - nav/ncx synchronization now normalizes path and anchor keys before matching translated body headings
   - DOCX ebook export supports cover page, metadata/info page, updateable TOC, images, figures, captions, and common inline/block styles
   - figure/image export now reads real pixel dimensions when available
+  - partial EPUB translation now still tries to translate/synchronize unmatched `nav/ncx` entries instead of leaving fallback items untouched
+  - non-standard XHTML container detection is broader, and `pre/code/ruby/math/svg` now have clearer preservation / fallback behavior during translation and DOCX export
+- TXT pipeline added:
+  - `.txt` files are translated natively as paragraph-like text blocks
+  - original blank-line structure is preserved where possible
+  - output is written as `.translated.txt`
 - Translation range setting added in UI and settings:
   - PDF = pages
   - PPT = slides
@@ -92,7 +101,7 @@ dotnet run --project .\TranslatorApp\TranslatorApp.csproj
 - Word now covers more structures, but true field-code-aware editing, host-anchor-aware note context, and merged-cell semantic recovery are still not fully modeled.
 - EPUB "range" is chapter/content-document based, not reader page-number based.
 - EPUB resume is now real resume, but it depends on the preserved temp workspace for that source file remaining available between runs.
-- Partial EPUB translation still avoids fully rewriting untouched TOC entries, so mixed translated/untranslated navigation is still possible when only some chapters are selected.
+- Partial EPUB translation is improved, but navigation can still be imperfect when source books use inconsistent anchors, duplicate titles, or heavily customized TOC markup.
 
 ## Where To Edit Next
 
